@@ -1,0 +1,44 @@
+[
+  {
+    "caseId": "case_001",
+    "department": "肾内科",
+    "difficulty": "中等",
+    "patientProfile": {
+      "name": "王女士",
+      "age": 42,
+      "gender": "女",
+      "occupation": "教师"
+    },
+    "chiefComplaint": "双下肢水肿 2 周",
+    "finalDiagnosis": "肾病综合征",
+    "visibleInfo": {
+      "openingStatement": "医生，我最近腿肿得厉害，早上起来脸也有点肿。"
+    },
+    "hiddenInfo": {
+      "symptoms": ["泡沫尿", "尿量减少", "乏力"],
+      "history": ["高血压 3 年", "无糖尿病史"],
+      "medication": ["偶尔服用布洛芬"],
+      "familyHistory": ["无明确肾病家族史"],
+      "labs": {
+        "urineProtein": "+++",
+        "serumAlbumin": "24 g/L",
+        "creatinine": "92 μmol/L"
+      }
+    },
+    "mustAskItems": [
+      "水肿部位和时间",
+      "尿量变化",
+      "泡沫尿",
+      "血尿",
+      "高血压病史",
+      "用药史",
+      "感染诱因",
+      "既往肾病史"
+    ],
+    "scoringRubric": {
+      "historyTaking": 50,
+      "clinicalReasoning": 30,
+      "communication": 20
+    }
+  }
+]

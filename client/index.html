@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>肾内科 AI 标准化病人 MVP</title>
+  <link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>肾内科 AI 标准化病人 MVP</h1>
+      <p>第一天版本：输入主诉，生成一个预设病例开场。</p>
+    </header>
+
+    <section class="card">
+      <h2>创建病例</h2>
+
+      <label for="complaint">主诉 / 训练目标</label>
+      <textarea id="complaint" placeholder="例如：水肿、蛋白尿；血尿；少尿、肌酐升高"></textarea>
+
+      <label for="difficulty">难度</label>
+      <select id="difficulty">
+        <option value="简单">简单</option>
+        <option value="中等" selected>中等</option>
+        <option value="偏难">偏难</option>
+      </select>
+
+      <button id="generateBtn">生成病例</button>
+    </section>
+
+    <section class="card" id="caseResult" style="display: none;">
+      <h2>病例已生成</h2>
+      <div class="case-info">
+        <p><strong>科室：</strong><span id="department"></span></p>
+        <p><strong>难度：</strong><span id="caseDifficulty"></span></p>
+        <p><strong>患者：</strong><span id="patientInfo"></span></p>
+        <p><strong>主诉：</strong><span id="chiefComplaint"></span></p>
+      </div>
+
+      <div class="patient-box">
+        <p><strong>患者开场：</strong></p>
+        <p id="openingStatement"></p>
+      </div>
+    </section>
+  </div>
+
+  <script src="./app.js"></script>
+</body>
+</html>
