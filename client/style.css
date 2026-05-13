@@ -90,3 +90,46 @@ button:hover {
   border-radius: 12px;
   padding: 16px;
 }
+
+.chat-box {
+  min-height: 220px;
+  max-height: 360px;
+  overflow-y: auto;
+  background: #f9fafb;
+  border-radius: 12px;
+  padding: 16px;
+  margin-bottom: 16px;
+}
+
+.message {
+  margin-bottom: 12px;
+  padding: 12px;
+  border-radius: 10px;
+  line-height: 1.6;
+}
+
+.message.doctor {
+  background: #dbeafe;
+}
+
+.message.patient {
+  background: #ecfdf5;
+}
+
+.chat-input-row {
+  display: flex;
+  gap: 10px;
+}
+
+.chat-input-row input {
+  flex: 1;
+  padding: 12px;
+  border: 1px solid #d1d5db;
+  border-radius: 10px;
+  font-size: 16px;
+}
+
+.chat-input-row button {
+  width: 140px;
+  margin-top: 0;
+}
