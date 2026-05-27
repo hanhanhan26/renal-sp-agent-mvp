@@ -1,5 +1,7 @@
 const generateBtn = document.getElementById("generateBtn");
 const sendQuestionBtn = document.getElementById("sendQuestionBtn");
+const finishInterviewBtn = document.getElementById("finishInterviewBtn");
+const submitScoreBtn = document.getElementById("submitScoreBtn");
 
 let currentCase = null;
 let conversationHistory = [];
@@ -62,6 +64,20 @@ generateBtn.addEventListener("click", async () => {
 });
 
 sendQuestionBtn.addEventListener("click", sendQuestion);
+
+finishInterviewBtn.addEventListener("click", () => {
+  if (!currentCase) {
+    alert("请先生成病例");
+    return;
+  }
+
+  document.getElementById("scoringSection").style.display = "block";
+  document.getElementById("scoringSection").scrollIntoView({
+    behavior: "smooth"
+  });
+});
+
+submitScoreBtn.addEventListener("click", submitScore);
 
 document.getElementById("doctorQuestion").addEventListener("keydown", (event) => {
   if (event.key === "Enter") {
@@ -138,4 +154,74 @@ function addMessage(role, text) {
 
   chatBox.appendChild(message);
   chatBox.scrollTop = chatBox.scrollHeight;
+}
+
+async function submitScore() {
+  const studentDiagnosis = document.getElementById("studentDiagnosis").value.trim();
+
+  if (!studentDiagnosis) {
+    alert("请先输入你的初步诊断");
+    return;
+  }
+
+  if (!currentCase) {
+    alert("请先生成病例");
+    return;
+  }
+
+  submitScoreBtn.disabled = true;
+  submitScoreBtn.textContent = "正在生成评分...";
+
+  try {
+    const response = await fetch("/api/scoring/evaluate", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        caseId: currentCase.caseId,
+        conversationHistory,
+        studentDiagnosis
+      })
+    });
+
+    const data = await response.json();
+
+    if (!data.success) {
+      alert("评分失败");
+      return;
+    }
+
+    const report = data.report;
+
+    document.getElementById("totalScore").textContent = report.totalScore;
+    document.getElementById("historyScore").textContent = report.historyScore;
+    document.getElementById("diagnosisScore").textContent = report.diagnosisScore;
+    document.getElementById("communicationScore").textContent = report.communicationScore;
+
+    renderList("coveredItems", report.coveredItems);
+    renderList("missedItems", report.missedItems);
+
+    document.getElementById("diagnosisFeedback").textContent = report.diagnosisFeedback;
+    document.getElementById("suggestion").textContent = report.suggestion;
+
+    document.getElementById("scoreResult").style.display = "block";
+  } catch (error) {
+    console.error(error);
+    alert("请求失败，请检查服务是否启动");
+  } finally {
+    submitScoreBtn.disabled = false;
+    submitScoreBtn.textContent = "提交诊断并生成评分";
+  }
+}
+
+function renderList(elementId, items) {
+  const list = document.getElementById(elementId);
+  list.innerHTML = "";
+
+  items.forEach(item => {
+    const li = document.createElement("li");
+    li.textContent = item;
+    list.appendChild(li);
+  });
 }

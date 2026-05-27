@@ -133,3 +133,29 @@ button:hover {
   width: 140px;
   margin-top: 0;
 }
+
+.secondary-btn {
+  background: #111827;
+  margin-top: 12px;
+}
+
+.secondary-btn:hover {
+  background: #374151;
+}
+
+.score-result {
+  margin-top: 20px;
+  background: #f9fafb;
+  border-radius: 12px;
+  padding: 16px;
+}
+
+.score-result h3 {
+  margin-top: 0;
+}
+
+.score-result ul {
+  background: #ffffff;
+  border-radius: 10px;
+  padding: 12px 12px 12px 32px;
+}

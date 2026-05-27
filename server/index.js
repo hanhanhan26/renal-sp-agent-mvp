@@ -158,6 +158,131 @@ app.post("/api/patient/reply", (req, res) => {
   });
 });
 
+app.post("/api/scoring/evaluate", (req, res) => {
+  const { caseId, conversationHistory, studentDiagnosis } = req.body;
+
+  const currentCase = caseSeeds.find(item => item.caseId === caseId);
+
+  if (!currentCase) {
+    return res.status(404).json({
+      success: false,
+      message: "没有找到对应病例"
+    });
+  }
+
+  const allQuestions = (conversationHistory || [])
+    .map(item => item.doctor)
+    .join(" ");
+
+  const checklist = [
+    {
+      item: "水肿部位和时间",
+      keywords: ["水肿", "肿", "腿肿", "脸肿", "多久", "什么时候"]
+    },
+    {
+      item: "尿量变化",
+      keywords: ["尿量", "尿少", "小便少", "少尿"]
+    },
+    {
+      item: "泡沫尿",
+      keywords: ["泡沫", "泡沫尿"]
+    },
+    {
+      item: "血尿",
+      keywords: ["血尿", "尿血", "红色", "茶色"]
+    },
+    {
+      item: "高血压病史",
+      keywords: ["高血压", "血压"]
+    },
+    {
+      item: "糖尿病史",
+      keywords: ["糖尿病", "血糖"]
+    },
+    {
+      item: "用药史",
+      keywords: ["药", "用药", "止痛药", "布洛芬", "感冒药"]
+    },
+    {
+      item: "家族史",
+      keywords: ["家族", "遗传", "家里人"]
+    },
+    {
+      item: "既往肾病史",
+      keywords: ["肾病", "以前", "既往", "肾功能"]
+    }
+  ];
+
+  const coveredItems = [];
+  const missedItems = [];
+
+  checklist.forEach(rule => {
+    const matched = rule.keywords.some(keyword => allQuestions.includes(keyword));
+
+    if (matched) {
+      coveredItems.push(rule.item);
+    } else {
+      missedItems.push(rule.item);
+    }
+  });
+
+  const historyScore = Math.round((coveredItems.length / checklist.length) * 50);
+
+  let diagnosisScore = 0;
+  const diagnosis = studentDiagnosis || "";
+
+  if (diagnosis.includes(currentCase.finalDiagnosis)) {
+    diagnosisScore = 30;
+  } else if (
+    diagnosis.includes("肾病") ||
+    diagnosis.includes("肾炎") ||
+    diagnosis.includes("肾损伤") ||
+    diagnosis.includes("肾功能")
+  ) {
+    diagnosisScore = 18;
+  } else {
+    diagnosisScore = 8;
+  }
+
+  let communicationScore = 12;
+
+  if (
+    allQuestions.includes("请") ||
+    allQuestions.includes("谢谢") ||
+    allQuestions.includes("别担心") ||
+    allQuestions.includes("不用紧张") ||
+    allQuestions.includes("我了解")
+  ) {
+    communicationScore = 20;
+  }
+
+  const totalScore = historyScore + diagnosisScore + communicationScore;
+
+  let diagnosisFeedback = "";
+
+  if (diagnosisScore === 30) {
+    diagnosisFeedback = `诊断正确，标准诊断为：${currentCase.finalDiagnosis}。`;
+  } else if (diagnosisScore === 18) {
+    diagnosisFeedback = `诊断方向基本正确，但还不够准确。标准诊断为：${currentCase.finalDiagnosis}。`;
+  } else {
+    diagnosisFeedback = `诊断方向不够明确。标准诊断为：${currentCase.finalDiagnosis}。`;
+  }
+
+  res.json({
+    success: true,
+    report: {
+      totalScore,
+      historyScore,
+      diagnosisScore,
+      communicationScore,
+      coveredItems,
+      missedItems,
+      diagnosisFeedback,
+      suggestion: "建议下次按照“主诉—现病史—既往史—用药史—家族史—检查建议”的顺序问诊，避免遗漏关键病史。"
+    }
+  });
+});
+
 app.get("*", (req, res) => {
   res.sendFile(path.join(__dirname, "../client/index.html"));
 });

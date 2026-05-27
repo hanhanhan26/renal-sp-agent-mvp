@@ -53,6 +53,38 @@
     <input id="doctorQuestion" type="text" placeholder="请输入医生的问题，例如：你小便有没有泡沫？" />
     <button id="sendQuestionBtn">发送</button>
   </div>
+
+  <button id="finishInterviewBtn" class="secondary-btn">结束问诊并评分</button>
+</section>
+
+<section class="card" id="scoringSection" style="display: none;">
+  <h2>评分反馈</h2>
+
+  <label for="studentDiagnosis">请输入你的初步诊断</label>
+  <input id="studentDiagnosis" type="text" placeholder="例如：肾病综合征" />
+
+  <button id="submitScoreBtn">提交诊断并生成评分</button>
+
+  <div id="scoreResult" class="score-result" style="display: none;">
+    <h3>评分报告</h3>
+
+    <p><strong>总分：</strong><span id="totalScore"></span>/100</p>
+    <p><strong>问诊得分：</strong><span id="historyScore"></span>/50</p>
+    <p><strong>诊断得分：</strong><span id="diagnosisScore"></span>/30</p>
+    <p><strong>沟通得分：</strong><span id="communicationScore"></span>/20</p>
+
+    <p><strong>已覆盖问诊要点：</strong></p>
+    <ul id="coveredItems"></ul>
+
+    <p><strong>遗漏问诊要点：</strong></p>
+    <ul id="missedItems"></ul>
+
+    <p><strong>诊断反馈：</strong></p>
+    <p id="diagnosisFeedback"></p>
+
+    <p><strong>改进建议：</strong></p>
+    <p id="suggestion"></p>
+  </div>
 </section>
 
   </div>
