@@ -6,11 +6,22 @@ const submitScoreBtn = document.getElementById("submitScoreBtn");
 let currentCase = null;
 let conversationHistory = [];
 
-generateBtn.addEventListener("click", async () => {
-  const complaint = document.getElementById("complaint").value;
+generateBtn.addEventListener("click", generateCase);
+sendQuestionBtn.addEventListener("click", sendQuestion);
+finishInterviewBtn.addEventListener("click", showScoringSection);
+submitScoreBtn.addEventListener("click", submitScore);
+
+document.getElementById("doctorQuestion").addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    sendQuestion();
+  }
+});
+
+async function generateCase() {
+  const complaint = document.getElementById("complaint").value.trim();
   const difficulty = document.getElementById("difficulty").value;
 
-  if (!complaint.trim()) {
+  if (!complaint) {
     alert("请先输入主诉或训练目标");
     return;
   }
@@ -32,27 +43,36 @@ generateBtn.addEventListener("click", async () => {
 
     const data = await response.json();
 
-    if (!data.success) {
-      alert("生成失败，请稍后重试");
+    if (!response.ok || !data.success) {
+      alert(data.message || "生成失败，请稍后重试");
       return;
+    }
+
+    if (data.warning) {
+      console.warn(data.warning);
     }
 
     currentCase = data.case;
     conversationHistory = [];
 
-    document.getElementById("department").textContent = currentCase.department;
-    document.getElementById("caseDifficulty").textContent = currentCase.difficulty;
+    document.getElementById("department").textContent = currentCase.department || "";
+    document.getElementById("caseDifficulty").textContent = currentCase.difficulty || "";
     document.getElementById("patientInfo").textContent =
-      `${currentCase.patientProfile.gender}，${currentCase.patientProfile.age} 岁，${currentCase.patientProfile.occupation}`;
-    document.getElementById("chiefComplaint").textContent = currentCase.chiefComplaint;
-    document.getElementById("openingStatement").textContent = currentCase.openingStatement;
+      `${currentCase.patientProfile.gender || ""}，${currentCase.patientProfile.age || ""} 岁，${currentCase.patientProfile.occupation || ""}`;
+    document.getElementById("chiefComplaint").textContent = currentCase.chiefComplaint || "";
+    document.getElementById("openingStatement").textContent = currentCase.openingStatement || "";
 
     document.getElementById("caseResult").style.display = "block";
     document.getElementById("chatSection").style.display = "block";
 
+    document.getElementById("scoringSection").style.display = "none";
+    document.getElementById("scoreResult").style.display = "none";
+    document.getElementById("studentDiagnosis").value = "";
+
     const chatBox = document.getElementById("chatBox");
     chatBox.innerHTML = "";
-    addMessage("患者", currentCase.openingStatement);
+
+    addMessage("患者", currentCase.openingStatement || "医生，我最近身体不太舒服，想来看看。");
 
   } catch (error) {
     console.error(error);
@@ -61,41 +81,19 @@ generateBtn.addEventListener("click", async () => {
     generateBtn.disabled = false;
     generateBtn.textContent = "生成病例";
   }
-});
-
-sendQuestionBtn.addEventListener("click", sendQuestion);
-
-finishInterviewBtn.addEventListener("click", () => {
-  if (!currentCase) {
-    alert("请先生成病例");
-    return;
-  }
-
-  document.getElementById("scoringSection").style.display = "block";
-  document.getElementById("scoringSection").scrollIntoView({
-    behavior: "smooth"
-  });
-});
-
-submitScoreBtn.addEventListener("click", submitScore);
-
-document.getElementById("doctorQuestion").addEventListener("keydown", (event) => {
-  if (event.key === "Enter") {
-    sendQuestion();
-  }
-});
+}
 
 async function sendQuestion() {
   const input = document.getElementById("doctorQuestion");
   const question = input.value.trim();
 
-  if (!question) {
-    alert("请输入问题");
+  if (!currentCase) {
+    alert("请先生成病例");
     return;
   }
 
-  if (!currentCase) {
-    alert("请先生成病例");
+  if (!question) {
+    alert("请输入问题");
     return;
   }
 
@@ -120,16 +118,18 @@ async function sendQuestion() {
 
     const data = await response.json();
 
-    if (!data.success) {
-      alert("患者回答失败");
+    if (!response.ok || !data.success) {
+      alert(data.message || "患者回答失败");
       return;
     }
 
-    addMessage("患者", data.reply);
+    const reply = data.reply || "这个我不太确定，您能再问得具体一点吗？";
+
+    addMessage("患者", reply);
 
     conversationHistory.push({
       doctor: question,
-      patient: data.reply
+      patient: reply
     });
 
   } catch (error) {
@@ -141,31 +141,28 @@ async function sendQuestion() {
   }
 }
 
-function addMessage(role, text) {
-  const chatBox = document.getElementById("chatBox");
+function showScoringSection() {
+  if (!currentCase) {
+    alert("请先生成病例");
+    return;
+  }
 
-  const message = document.createElement("div");
-  message.className = role === "医生" ? "message doctor" : "message patient";
-
-  message.innerHTML = `
-    <strong>${role}：</strong>
-    <span>${text}</span>
-  `;
-
-  chatBox.appendChild(message);
-  chatBox.scrollTop = chatBox.scrollHeight;
+  document.getElementById("scoringSection").style.display = "block";
+  document.getElementById("scoringSection").scrollIntoView({
+    behavior: "smooth"
+  });
 }
 
 async function submitScore() {
   const studentDiagnosis = document.getElementById("studentDiagnosis").value.trim();
 
-  if (!studentDiagnosis) {
-    alert("请先输入你的初步诊断");
+  if (!currentCase) {
+    alert("请先生成病例");
     return;
   }
 
-  if (!currentCase) {
-    alert("请先生成病例");
+  if (!studentDiagnosis) {
+    alert("请先输入你的初步诊断");
     return;
   }
 
@@ -187,23 +184,23 @@ async function submitScore() {
 
     const data = await response.json();
 
-    if (!data.success) {
-      alert("评分失败");
+    if (!response.ok || !data.success) {
+      alert(data.message || "评分失败");
       return;
     }
 
     const report = data.report;
 
-    document.getElementById("totalScore").textContent = report.totalScore;
-    document.getElementById("historyScore").textContent = report.historyScore;
-    document.getElementById("diagnosisScore").textContent = report.diagnosisScore;
-    document.getElementById("communicationScore").textContent = report.communicationScore;
+    document.getElementById("totalScore").textContent = report.totalScore ?? 0;
+    document.getElementById("historyScore").textContent = report.historyScore ?? 0;
+    document.getElementById("diagnosisScore").textContent = report.diagnosisScore ?? 0;
+    document.getElementById("communicationScore").textContent = report.communicationScore ?? 0;
 
     renderList("coveredItems", report.coveredItems);
     renderList("missedItems", report.missedItems);
 
-    document.getElementById("diagnosisFeedback").textContent = report.diagnosisFeedback;
-    document.getElementById("suggestion").textContent = report.suggestion;
+    document.getElementById("diagnosisFeedback").textContent = report.diagnosisFeedback || "";
+    document.getElementById("suggestion").textContent = report.suggestion || "";
 
     document.getElementById("scoreResult").style.display = "block";
   } catch (error) {
@@ -215,11 +212,39 @@ async function submitScore() {
   }
 }
 
+function addMessage(role, text) {
+  const chatBox = document.getElementById("chatBox");
+
+  const message = document.createElement("div");
+  message.className = role === "医生" ? "message doctor" : "message patient";
+
+  const strong = document.createElement("strong");
+  strong.textContent = `${role}：`;
+
+  const span = document.createElement("span");
+  span.textContent = text || "";
+
+  message.appendChild(strong);
+  message.appendChild(span);
+
+  chatBox.appendChild(message);
+  chatBox.scrollTop = chatBox.scrollHeight;
+}
+
 function renderList(elementId, items) {
   const list = document.getElementById(elementId);
   list.innerHTML = "";
 
-  items.forEach(item => {
+  const safeItems = Array.isArray(items) ? items : [];
+
+  if (safeItems.length === 0) {
+    const li = document.createElement("li");
+    li.textContent = "暂无";
+    list.appendChild(li);
+    return;
+  }
+
+  safeItems.forEach(item => {
     const li = document.createElement("li");
     li.textContent = item;
     list.appendChild(li);

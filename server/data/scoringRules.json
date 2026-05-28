@@ -1,0 +1,14 @@
+{
+  "historyTaking": {
+    "name": "问诊完整度",
+    "score": 50
+  },
+  "clinicalReasoning": {
+    "name": "诊断思路",
+    "score": 30
+  },
+  "communication": {
+    "name": "医患沟通",
+    "score": 20
+  }
+}
