@@ -1,10 +1,12 @@
 require("dotenv").config();
-
+const { searchKnowledge } = require("./services/kbSearch");
 const express = require("express");
 const cors = require("cors");
 const path = require("path");
+const { generateCaseFromPdfKnowledge, generatePatientReply } = require("./services/aiClient");
 
 let caseSeeds = require("./data/caseSeeds.json");
+const activeCases = new Map();
 
 if (!Array.isArray(caseSeeds)) {
   caseSeeds = [];
@@ -617,49 +619,89 @@ app.get("/api/health", (req, res) => {
   });
 });
 
+app.get("/api/knowledge/search", (req, res) => {
+  const q = req.query.q || "";
+  const results = searchKnowledge(q, { topK: 5 });
+
+  res.json({
+    success: true,
+    query: q,
+    count: results.length,
+    results: results.map((item) => ({
+      id: item.id,
+      source: item.source,
+      chunkIndex: item.chunkIndex,
+      score: item.score,
+      keywords: item.keywords,
+      preview: item.text.slice(0, 300)
+    }))
+  });
+});
+
 app.post("/api/cases/generate", async (req, res) => {
   try {
     const { complaint, difficulty } = req.body;
 
-    let selectedCase = null;
-    let source = "seed";
-    let warning = "";
-
-    if (process.env.DEEPSEEK_API_KEY && complaint) {
-      try {
-        selectedCase = await generateCaseWithDeepSeek(complaint, difficulty);
-        source = "deepseek";
-      } catch (error) {
-        console.error("AI 生成病例失败，改用本地病例：", error.message);
-        warning = "AI 生成病例失败，已自动改用本地病例种子。";
-      }
+    if (!complaint || !complaint.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: "请先输入主诉或训练目标"
+      });
     }
 
-    if (!selectedCase) {
-      selectedCase = selectSeedCase(complaint);
+    const relatedChunks = searchKnowledge(complaint, { topK: 6 });
+
+    let selectedCase = null;
+
+    if (process.env.DEEPSEEK_API_KEY && relatedChunks.length > 0) {
+      selectedCase = await generateCaseFromPdfKnowledge({
+        complaint,
+        difficulty,
+        chunks: relatedChunks
+      });
+    } else {
+      selectedCase = caseSeeds[0];
     }
 
     if (!selectedCase) {
       return res.status(500).json({
         success: false,
-        message: "没有找到可用病例，请检查 server/data/caseSeeds.json"
+        message: "病例生成失败"
       });
     }
 
-    selectedCase = normalizeCaseShape(selectedCase, complaint, difficulty);
+    activeCases.set(selectedCase.caseId, selectedCase);
+
+    const publicCase = {
+      caseId: selectedCase.caseId,
+      department: selectedCase.department,
+      difficulty: selectedCase.difficulty,
+      patientProfile: {
+        age: selectedCase.patientProfile.age,
+        gender: selectedCase.patientProfile.gender,
+        occupation: selectedCase.patientProfile.occupation
+      },
+      chiefComplaint: selectedCase.chiefComplaint,
+      openingStatement: selectedCase.visibleInfo.openingStatement
+    };
 
     res.json({
       success: true,
-      source,
-      warning,
-      case: toPublicCase(selectedCase)
+      case: publicCase,
+      evidence: relatedChunks.map((item) => ({
+        id: item.id,
+        source: item.source,
+        chunkIndex: item.chunkIndex,
+        score: item.score
+      }))
     });
   } catch (error) {
-    console.error(error);
+    console.error("病例生成失败：", error);
 
     res.status(500).json({
       success: false,
-      message: error.message || "生成病例失败"
+      message: "病例生成失败，请检查 PDF 知识库或 API Key",
+      error: error.message
     });
   }
 });
@@ -668,14 +710,9 @@ app.post("/api/patient/reply", async (req, res) => {
   try {
     const { caseId, question, conversationHistory } = req.body;
 
-    if (!question || !question.trim()) {
-      return res.status(400).json({
-        success: false,
-        message: "请先输入医生问题"
-      });
-    }
-
-    const currentCase = findCaseById(caseId);
+    const currentCase =
+      activeCases.get(caseId) ||
+      caseSeeds.find((item) => item.caseId === caseId);
 
     if (!currentCase) {
       return res.status(404).json({
@@ -684,124 +721,171 @@ app.post("/api/patient/reply", async (req, res) => {
       });
     }
 
+    const relatedChunks = searchKnowledge(
+      `${currentCase.chiefComplaint} ${question}`,
+      { topK: 4 }
+    );
+
     let reply = "";
 
     if (process.env.DEEPSEEK_API_KEY) {
-      try {
-        reply = await generatePatientReplyWithDeepSeek(
-          currentCase,
-          question,
-          conversationHistory || []
-        );
-      } catch (error) {
-        console.error("AI 患者回复失败，改用规则回复：", error.message);
-        reply = ruleBasedPatientReply(currentCase, question);
-      }
+      reply = await generatePatientReply({
+        caseData: currentCase,
+        question,
+        conversationHistory,
+        chunks: relatedChunks
+      });
     } else {
-      reply = ruleBasedPatientReply(currentCase, question);
+      reply = "我不太清楚，还是想请医生帮我看看。";
     }
 
     res.json({
       success: true,
-      reply
+      reply,
+      evidence: relatedChunks.map((item) => ({
+        id: item.id,
+        source: item.source,
+        chunkIndex: item.chunkIndex,
+        score: item.score
+      }))
     });
   } catch (error) {
-    console.error(error);
+    console.error("患者回答失败：", error);
 
     res.status(500).json({
       success: false,
-      message: error.message || "患者回复失败"
+      message: "患者回答失败",
+      error: error.message
     });
   }
 });
 
 app.post("/api/scoring/evaluate", (req, res) => {
-  try {
-    const { caseId, conversationHistory, studentDiagnosis } = req.body;
+  const { caseId, conversationHistory, studentDiagnosis } = req.body;
 
-    const currentCase = findCaseById(caseId);
+  console.log("评分收到 caseId:", caseId);
+  console.log("当前 activeCases:", Array.from(activeCases.keys()));
 
-    if (!currentCase) {
-      return res.status(404).json({
-        success: false,
-        message: "没有找到对应病例"
-      });
-    }
+  const currentCase =
+    activeCases.get(caseId) ||
+    caseSeeds.find(item => item.caseId === caseId);
 
-    const allQuestions = (conversationHistory || [])
-      .map(item => item.doctor || "")
-      .join(" ");
-
-    const checklist = buildChecklist(currentCase);
-
-    const coveredItems = [];
-    const missedItems = [];
-
-    checklist.forEach(rule => {
-      const matched = rule.keywords.some(keyword => allQuestions.includes(keyword));
-
-      if (matched) {
-        coveredItems.push(rule.item);
-      } else {
-        missedItems.push(rule.item);
-      }
-    });
-
-    const historyScore = Math.round((coveredItems.length / checklist.length) * 50);
-    const diagnosisScore = calculateDiagnosisScore(
-      studentDiagnosis,
-      currentCase.finalDiagnosis
-    );
-
-    let communicationScore = 12;
-
-    if (
-      allQuestions.includes("请") ||
-      allQuestions.includes("谢谢") ||
-      allQuestions.includes("别担心") ||
-      allQuestions.includes("不用紧张") ||
-      allQuestions.includes("我了解") ||
-      allQuestions.includes("辛苦")
-    ) {
-      communicationScore = 20;
-    }
-
-    const totalScore = historyScore + diagnosisScore + communicationScore;
-
-    let diagnosisFeedback = "";
-
-    if (diagnosisScore === 30) {
-      diagnosisFeedback = `诊断正确，标准诊断为：${currentCase.finalDiagnosis}。`;
-    } else if (diagnosisScore === 18) {
-      diagnosisFeedback = `诊断方向基本正确，但还不够准确。标准诊断为：${currentCase.finalDiagnosis}。`;
-    } else if (diagnosisScore === 0) {
-      diagnosisFeedback = `你还没有提交明确诊断。标准诊断为：${currentCase.finalDiagnosis}。`;
-    } else {
-      diagnosisFeedback = `诊断方向不够明确。标准诊断为：${currentCase.finalDiagnosis}。`;
-    }
-
-    res.json({
-      success: true,
-      report: {
-        totalScore,
-        historyScore,
-        diagnosisScore,
-        communicationScore,
-        coveredItems,
-        missedItems,
-        diagnosisFeedback,
-        suggestion: "建议下次按照“主诉—现病史—既往史—用药史—家族史—检查建议”的顺序问诊，避免遗漏关键病史。"
-      }
-    });
-  } catch (error) {
-    console.error(error);
-
-    res.status(500).json({
+  if (!currentCase) {
+    return res.status(404).json({
       success: false,
-      message: error.message || "评分失败"
+      message: `没有找到对应病例：${caseId || "caseId 为空"}`
     });
   }
+
+  const allQuestions = (conversationHistory || [])
+    .map(item => item.doctor || "")
+    .join(" ");
+
+  const mustAskItems =
+    Array.isArray(currentCase.mustAskItems) && currentCase.mustAskItems.length > 0
+      ? currentCase.mustAskItems
+      : [
+          "主诉",
+          "现病史",
+          "尿量变化",
+          "泡沫尿",
+          "血尿",
+          "水肿",
+          "既往史",
+          "用药史",
+          "家族史"
+        ];
+
+  const coveredItems = [];
+  const missedItems = [];
+
+  mustAskItems.forEach(item => {
+    const itemText = String(item);
+
+    const matched =
+      allQuestions.includes(itemText) ||
+      itemText.includes("水肿") && allQuestions.includes("肿") ||
+      itemText.includes("尿量") && (allQuestions.includes("尿量") || allQuestions.includes("小便")) ||
+      itemText.includes("泡沫") && allQuestions.includes("泡沫") ||
+      itemText.includes("血尿") && (allQuestions.includes("血尿") || allQuestions.includes("尿血") || allQuestions.includes("颜色")) ||
+      itemText.includes("用药") && (allQuestions.includes("药") || allQuestions.includes("用药")) ||
+      itemText.includes("家族") && (allQuestions.includes("家族") || allQuestions.includes("遗传")) ||
+      itemText.includes("过敏") && allQuestions.includes("过敏") ||
+      itemText.includes("既往") && (allQuestions.includes("以前") || allQuestions.includes("既往"));
+
+    if (matched) {
+      coveredItems.push(item);
+    } else {
+      missedItems.push(item);
+    }
+  });
+
+  const historyScore = Math.round((coveredItems.length / mustAskItems.length) * 50);
+
+  const finalDiagnosis = currentCase.finalDiagnosis || "";
+  const diagnosis = studentDiagnosis || "";
+
+  let diagnosisScore = 0;
+
+  if (
+    diagnosis &&
+    finalDiagnosis &&
+    (
+      diagnosis.includes(finalDiagnosis) ||
+      finalDiagnosis.includes(diagnosis)
+    )
+  ) {
+    diagnosisScore = 30;
+  } else if (
+    diagnosis.includes("肾") ||
+    diagnosis.includes("尿") ||
+    diagnosis.includes("蛋白") ||
+    diagnosis.includes("血尿")
+  ) {
+    diagnosisScore = 18;
+  } else {
+    diagnosisScore = 8;
+  }
+
+  let communicationScore = 12;
+
+  if (
+    allQuestions.includes("请") ||
+    allQuestions.includes("谢谢") ||
+    allQuestions.includes("别担心") ||
+    allQuestions.includes("不用紧张") ||
+    allQuestions.includes("我了解")
+  ) {
+    communicationScore = 20;
+  }
+
+  const totalScore = historyScore + diagnosisScore + communicationScore;
+
+  let diagnosisFeedback = "";
+
+  if (diagnosisScore === 30) {
+    diagnosisFeedback = `诊断正确，标准诊断为：${finalDiagnosis}。`;
+  } else if (diagnosisScore === 18) {
+    diagnosisFeedback = `诊断方向基本正确，但还不够准确。标准诊断为：${finalDiagnosis}。`;
+  } else {
+    diagnosisFeedback = `诊断方向不够明确。标准诊断为：${finalDiagnosis}。`;
+  }
+
+  res.json({
+    success: true,
+    report: {
+      totalScore,
+      historyScore,
+      diagnosisScore,
+      communicationScore,
+      coveredItems,
+      missedItems,
+      diagnosisFeedback,
+      suggestion: "建议下次按照“主诉—现病史—既往史—用药史—家族史—检查建议”的顺序问诊，避免遗漏关键病史。"
+    }
+  });
 });
+
 
 app.get("*", (req, res) => {
   res.sendFile(path.join(__dirname, "../client/index.html"));
