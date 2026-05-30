@@ -1,19 +1,42 @@
-require("dotenv").config();
+try {
+  require("dotenv").config();
+} catch (error) {
+  console.warn("dotenv 未安装或加载失败，已跳过 .env 加载。线上 Render 环境变量不受影响。");
+}
 
+const fs = require("fs");
+const path = require("path");
 const express = require("express");
 const cors = require("cors");
-const path = require("path");
 
-const { searchKnowledge } = require("./services/kbSearch");
-const { generateCaseFromPdfKnowledge, generatePatientReply } = require("./services/aiClient");
-const { deepseekScoreInterview } = require("./services/deepseekScorer");
-const { extractCluesFromPatientText } = require("./services/extractClues");
-
-let caseSeeds = require("./data/caseSeeds.json");
-
-if (!Array.isArray(caseSeeds)) {
-  caseSeeds = [];
+function optionalRequire(modulePath, fallbackValue) {
+  try {
+    return require(modulePath);
+  } catch (error) {
+    console.warn(`可选模块加载失败：${modulePath}，已使用兜底逻辑。原因：${error.message}`);
+    return fallbackValue;
+  }
 }
+
+const { searchKnowledge } = optionalRequire("./services/kbSearch", {
+  searchKnowledge: () => []
+});
+
+const {
+  generateCaseFromPdfKnowledge,
+  generatePatientReply
+} = optionalRequire("./services/aiClient", {
+  generateCaseFromPdfKnowledge: null,
+  generatePatientReply: null
+});
+
+const { deepseekScoreInterview } = optionalRequire("./services/deepseekScorer", {
+  deepseekScoreInterview: null
+});
+
+const { extractCluesFromPatientText } = optionalRequire("./services/extractClues", {
+  extractCluesFromPatientText: null
+});
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -22,33 +45,218 @@ const activeCases = new Map();
 const generatedCases = new Map();
 
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: "2mb" }));
 app.use(express.static(path.join(__dirname, "../client")));
 
-/**
- * 查找病例
- */
-function findCaseById(caseId) {
-  return (
-    activeCases.get(caseId) ||
-    generatedCases.get(caseId) ||
-    caseSeeds.find(item => item.caseId === caseId)
-  );
+function cloneJson(value) {
+  return JSON.parse(JSON.stringify(value));
 }
 
-/**
- * 保存病例
- */
-function saveCase(fullCase) {
-  if (fullCase && fullCase.caseId) {
-    activeCases.set(fullCase.caseId, fullCase);
-    generatedCases.set(fullCase.caseId, fullCase);
+function getDefaultCaseSeeds() {
+  return [
+    {
+      caseId: "case_001",
+      department: "肾内科",
+      difficulty: "中等",
+      patientProfile: {
+        name: "王女士",
+        age: 42,
+        gender: "女",
+        occupation: "教师"
+      },
+      chiefComplaint: "双下肢水肿 2 周",
+      finalDiagnosis: "肾病综合征",
+      visibleInfo: {
+        openingStatement: "医生，我最近腿肿得厉害，早上起来脸也有点肿。"
+      },
+      hiddenInfo: {
+        symptoms: ["泡沫尿", "尿量减少", "乏力"],
+        history: ["高血压 3 年", "无糖尿病史"],
+        medication: ["偶尔服用布洛芬"],
+        familyHistory: ["无明确肾病家族史"],
+        labs: {
+          urineProtein: "+++",
+          serumAlbumin: "24 g/L",
+          creatinine: "92 μmol/L"
+        }
+      },
+      mustAskItems: [
+        "水肿部位和时间",
+        "尿量变化",
+        "泡沫尿",
+        "血尿",
+        "高血压病史",
+        "用药史",
+        "感染诱因",
+        "既往肾病史"
+      ],
+      scoringRubric: {
+        historyTaking: 50,
+        clinicalReasoning: 30,
+        communication: 20
+      }
+    },
+    {
+      caseId: "case_002",
+      department: "肾内科",
+      difficulty: "中等",
+      patientProfile: {
+        name: "李同学",
+        age: 17,
+        gender: "男",
+        occupation: "高中生"
+      },
+      chiefComplaint: "肉眼血尿 3 天，伴眼睑水肿",
+      finalDiagnosis: "急性肾小球肾炎",
+      visibleInfo: {
+        openingStatement: "医生，我这几天尿的颜色像茶水一样，眼皮也有点肿。"
+      },
+      hiddenInfo: {
+        symptoms: ["咽痛后出现血尿", "轻度头痛", "尿量减少"],
+        history: ["2 周前有咽喉痛"],
+        medication: ["自行服用感冒药"],
+        familyHistory: ["无肾病家族史"],
+        labs: {
+          urineRBC: "满视野",
+          urineProtein: "+",
+          creatinine: "110 μmol/L",
+          bloodPressure: "150/95 mmHg"
+        }
+      },
+      mustAskItems: [
+        "血尿颜色",
+        "是否疼痛",
+        "近期感染史",
+        "尿量变化",
+        "水肿情况",
+        "血压情况",
+        "既往肾病史",
+        "用药史"
+      ],
+      scoringRubric: {
+        historyTaking: 50,
+        clinicalReasoning: 30,
+        communication: 20
+      }
+    },
+    {
+      caseId: "case_003",
+      department: "肾内科",
+      difficulty: "偏难",
+      patientProfile: {
+        name: "张先生",
+        age: 68,
+        gender: "男",
+        occupation: "退休工人"
+      },
+      chiefComplaint: "尿量减少 2 天，乏力明显",
+      finalDiagnosis: "急性肾损伤",
+      visibleInfo: {
+        openingStatement: "医生，我这两天尿特别少，人也很没力气。"
+      },
+      hiddenInfo: {
+        symptoms: ["口渴", "乏力", "食欲差"],
+        history: ["近期腹泻 3 天", "高血压 10 年"],
+        medication: ["长期服用降压药", "近期服用止痛药"],
+        familyHistory: ["无明确肾病家族史"],
+        labs: {
+          creatinine: "265 μmol/L",
+          ureaNitrogen: "18 mmol/L",
+          potassium: "5.6 mmol/L"
+        }
+      },
+      mustAskItems: [
+        "尿量具体变化",
+        "近期腹泻或呕吐",
+        "饮水情况",
+        "用药史",
+        "高血压病史",
+        "既往肾功能",
+        "水肿或气促",
+        "危险信号"
+      ],
+      scoringRubric: {
+        historyTaking: 50,
+        clinicalReasoning: 30,
+        communication: 20
+      }
+    }
+  ];
+}
+
+function loadCaseSeeds() {
+  const filePath = path.join(__dirname, "data", "caseSeeds.json");
+
+  try {
+    if (!fs.existsSync(filePath)) {
+      console.warn("没有找到 server/data/caseSeeds.json，已使用内置病例种子。");
+      return getDefaultCaseSeeds();
+    }
+
+    const rawText = fs.readFileSync(filePath, "utf8").trim();
+
+    if (!rawText) {
+      console.warn("caseSeeds.json 是空文件，已使用内置病例种子。");
+      return getDefaultCaseSeeds();
+    }
+
+    const parsed = JSON.parse(rawText);
+
+    if (!Array.isArray(parsed) || parsed.length === 0) {
+      console.warn("caseSeeds.json 不是非空数组，已使用内置病例种子。");
+      return getDefaultCaseSeeds();
+    }
+
+    return parsed
+      .filter(item => item && typeof item === "object")
+      .map((item, index) => normalizeCaseShape(item, item.chiefComplaint, item.difficulty, `case_seed_${index + 1}`));
+  } catch (error) {
+    console.error("caseSeeds.json 读取或解析失败，已使用内置病例种子。错误：", error.message);
+    return getDefaultCaseSeeds();
   }
 }
 
-/**
- * 创建空的结构化线索对象
- */
+let caseSeeds = loadCaseSeeds();
+
+if (!Array.isArray(caseSeeds) || caseSeeds.length === 0) {
+  caseSeeds = getDefaultCaseSeeds();
+}
+
+function safeSearchKnowledge(query, options = {}) {
+  try {
+    const results = searchKnowledge ? searchKnowledge(query || "", options) : [];
+    return Array.isArray(results) ? results : [];
+  } catch (error) {
+    console.error("知识库检索失败：", error.message);
+    return [];
+  }
+}
+
+function findCaseById(caseId) {
+  if (!caseId) {
+    return null;
+  }
+
+  const id = String(caseId);
+
+  return (
+    activeCases.get(id) ||
+    generatedCases.get(id) ||
+    caseSeeds.find(item => item && String(item.caseId) === id) ||
+    null
+  );
+}
+
+function saveCase(fullCase) {
+  if (!fullCase || !fullCase.caseId) {
+    return;
+  }
+
+  const id = String(fullCase.caseId);
+  activeCases.set(id, fullCase);
+  generatedCases.set(id, fullCase);
+}
+
 function createEmptyStructuredClues() {
   return {
     symptoms: [],
@@ -63,9 +271,6 @@ function createEmptyStructuredClues() {
   };
 }
 
-/**
- * 转成字符串数组，防止 Extractor 返回格式不稳定
- */
 function toTextArray(value) {
   if (!value) {
     return [];
@@ -94,9 +299,6 @@ function toTextArray(value) {
   return [String(value)].filter(Boolean);
 }
 
-/**
- * 支持中英文 key，避免 Extractor 偶尔返回中文字段导致丢数据
- */
 function pickClueValue(clues, keys) {
   for (const key of keys) {
     if (clues && clues[key] !== undefined) {
@@ -107,9 +309,6 @@ function pickClueValue(clues, keys) {
   return undefined;
 }
 
-/**
- * 统一 Extractor 返回结构
- */
 function normalizeExtractedClues(clues) {
   const raw = clues && typeof clues === "object" ? clues : {};
 
@@ -126,16 +325,10 @@ function normalizeExtractedClues(clues) {
   };
 }
 
-/**
- * 数组合并去重
- */
 function mergeUnique(oldList, newList) {
   return [...new Set([...(oldList || []), ...(newList || [])].filter(Boolean))];
 }
 
-/**
- * 把本轮提取到的线索合并进病例总线索池
- */
 function mergeClues(baseClues, newClues) {
   const base = normalizeExtractedClues(baseClues);
   const incoming = normalizeExtractedClues(newClues);
@@ -153,10 +346,11 @@ function mergeClues(baseClues, newClues) {
   };
 }
 
-/**
- * 给病例增加运行时状态
- */
 function ensureCaseRuntimeState(fullCase) {
+  if (!fullCase || typeof fullCase !== "object") {
+    return fullCase;
+  }
+
   if (!fullCase.structuredClues) {
     fullCase.structuredClues = createEmptyStructuredClues();
   }
@@ -168,10 +362,6 @@ function ensureCaseRuntimeState(fullCase) {
   return fullCase;
 }
 
-/**
- * 记录一轮问诊：
- * 医生问题 + 患者回答 + Extractor 线索
- */
 function recordInterviewRound(fullCase, roundData) {
   ensureCaseRuntimeState(fullCase);
 
@@ -192,53 +382,45 @@ function recordInterviewRound(fullCase, roundData) {
   };
 
   fullCase.interviewRounds.push(round);
-
   saveCase(fullCase);
 
   return round;
 }
 
-/**
- * 从病例种子中选择病例
- */
 function selectSeedCase(complaint) {
-  if (!caseSeeds || caseSeeds.length === 0) {
-    return null;
-  }
+  const seeds = Array.isArray(caseSeeds) && caseSeeds.length > 0 ? caseSeeds : getDefaultCaseSeeds();
+  const text = complaint ? String(complaint).toLowerCase() : "";
 
-  let selectedCase = caseSeeds[0];
-  const text = complaint ? complaint.toLowerCase() : "";
+  let selectedCase = seeds[0];
 
-  if (text.includes("血尿") && caseSeeds[1]) {
-    selectedCase = caseSeeds[1];
+  if (text.includes("血尿") && seeds[1]) {
+    selectedCase = seeds[1];
   } else if (
     (
       text.includes("少尿") ||
       text.includes("尿少") ||
       text.includes("肌酐") ||
-      text.includes("急性肾损伤")
+      text.includes("急性肾损伤") ||
+      text.includes("aki")
     ) &&
-    caseSeeds[2]
+    seeds[2]
   ) {
-    selectedCase = caseSeeds[2];
+    selectedCase = seeds[2];
   } else if (
     text.includes("水肿") ||
     text.includes("蛋白尿") ||
     text.includes("泡沫尿")
   ) {
-    selectedCase = caseSeeds[0];
+    selectedCase = seeds[0];
   }
 
-  return selectedCase;
+  return selectedCase ? cloneJson(selectedCase) : null;
 }
 
-/**
- * 统一病例结构，防止 AI 返回字段不完整
- */
-function normalizeCaseShape(rawCase, complaint, difficulty) {
-  const fullCase = rawCase || {};
+function normalizeCaseShape(rawCase, complaint, difficulty, fallbackCaseId = null) {
+  const fullCase = rawCase && typeof rawCase === "object" ? rawCase : {};
 
-  fullCase.caseId = fullCase.caseId || `ai_${Date.now()}`;
+  fullCase.caseId = fullCase.caseId || fallbackCaseId || `ai_${Date.now()}`;
   fullCase.department = fullCase.department || "肾内科";
   fullCase.difficulty = difficulty || fullCase.difficulty || "中等";
   fullCase.chiefComplaint = fullCase.chiefComplaint || complaint || "肾内科相关不适";
@@ -293,36 +475,34 @@ function normalizeCaseShape(rawCase, complaint, difficulty) {
   return fullCase;
 }
 
-/**
- * 返回给前端的公开病例，不包含最终诊断和隐藏信息
- */
 function toPublicCase(fullCase) {
+  const safeCase = normalizeCaseShape(fullCase || {}, "肾内科相关不适", "中等");
+
   return {
-    caseId: fullCase.caseId,
-    department: fullCase.department,
-    difficulty: fullCase.difficulty,
+    caseId: safeCase.caseId,
+    department: safeCase.department,
+    difficulty: safeCase.difficulty,
     patientProfile: {
-      age: fullCase.patientProfile?.age || "",
-      gender: fullCase.patientProfile?.gender || "",
-      occupation: fullCase.patientProfile?.occupation || ""
+      age: safeCase.patientProfile?.age || "",
+      gender: safeCase.patientProfile?.gender || "",
+      occupation: safeCase.patientProfile?.occupation || ""
     },
-    chiefComplaint: fullCase.chiefComplaint,
-    openingStatement: fullCase.visibleInfo?.openingStatement || ""
+    chiefComplaint: safeCase.chiefComplaint,
+    openingStatement: safeCase.visibleInfo?.openingStatement || ""
   };
 }
 
-/**
- * 安全提取线索：
- * Extractor Agent 失败时，也不影响患者回答主流程
- */
 async function safeExtractClues(patientText, context = {}) {
   try {
-    if (!patientText || !patientText.trim()) {
+    if (!patientText || !String(patientText).trim()) {
+      return createEmptyStructuredClues();
+    }
+
+    if (!extractCluesFromPatientText) {
       return createEmptyStructuredClues();
     }
 
     const clues = await extractCluesFromPatientText(patientText, context);
-
     return normalizeExtractedClues(clues);
   } catch (error) {
     console.error("结构化线索提取失败：", error.message);
@@ -330,10 +510,6 @@ async function safeExtractClues(patientText, context = {}) {
   }
 }
 
-
-/**
- * 解析 AI 返回的 JSON
- */
 function parseAIJson(content) {
   const text = String(content || "").trim();
 
@@ -353,10 +529,6 @@ function parseAIJson(content) {
   return JSON.parse(cleaned);
 }
 
-/**
- * 直接调用 DeepSeek 的通用函数
- * 目前保留，方便你后面扩展。
- */
 async function callDeepSeek(messages, options = {}) {
   const apiKey = process.env.DEEPSEEK_API_KEY;
 
@@ -380,7 +552,7 @@ async function callDeepSeek(messages, options = {}) {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "Authorization": `Bearer ${apiKey}`
+      Authorization: `Bearer ${apiKey}`
     },
     body: JSON.stringify(body)
   });
@@ -394,9 +566,6 @@ async function callDeepSeek(messages, options = {}) {
   return data.choices?.[0]?.message?.content || "";
 }
 
-/**
- * 备用病例生成函数
- */
 async function generateCaseWithDeepSeek(complaint, difficulty) {
   const content = await callDeepSeek(
     [
@@ -458,20 +627,16 @@ JSON 格式必须严格如下：
     }
   );
 
-  const generatedCase = normalizeCaseShape(parseAIJson(content), complaint, difficulty);
-  generatedCase.caseId = `ai_${Date.now()}`;
-
+  const generatedCase = normalizeCaseShape(parseAIJson(content), complaint, difficulty, `ai_${Date.now()}`);
+  generatedCase.caseId = generatedCase.caseId || `ai_${Date.now()}`;
   saveCase(generatedCase);
 
   return generatedCase;
 }
 
-/**
- * 备用患者回答函数
- */
 async function generatePatientReplyWithDeepSeek(currentCase, question, conversationHistory) {
   const historyText = (conversationHistory || [])
-    .map(item => `医生：${item.doctor}\n患者：${item.patient}`)
+    .map(item => `医生：${item.doctor || ""}\n患者：${item.patient || ""}`)
     .join("\n");
 
   const reply = await callDeepSeek(
@@ -518,12 +683,9 @@ ${question}
   return reply.trim();
 }
 
-/**
- * 没有 API Key 时的规则版患者回答
- */
 function ruleBasedPatientReply(currentCase, question) {
-  const text = question || "";
-  const caseText = JSON.stringify(currentCase);
+  const text = String(question || "");
+  const caseText = JSON.stringify(currentCase || {});
 
   if (
     text.includes("诊断") ||
@@ -623,10 +785,7 @@ function ruleBasedPatientReply(currentCase, question) {
     return "尿量好像没有特别明显的变化。";
   }
 
-  if (
-    text.includes("泡沫尿") ||
-    text.includes("泡沫")
-  ) {
+  if (text.includes("泡沫尿") || text.includes("泡沫")) {
     if (caseText.includes("泡沫尿") || caseText.includes("泡沫")) {
       return "有，最近小便泡沫比以前多，而且不太容易散。";
     }
@@ -639,7 +798,9 @@ function ruleBasedPatientReply(currentCase, question) {
     text.includes("尿血") ||
     text.includes("红色") ||
     text.includes("茶色") ||
-    text.includes("茶水")
+    text.includes("茶水") ||
+    text.includes("尿色") ||
+    text.includes("颜色")
   ) {
     if (caseText.includes("血尿") || caseText.includes("茶水")) {
       return "有，这几天尿的颜色有点像茶水一样。";
@@ -648,10 +809,7 @@ function ruleBasedPatientReply(currentCase, question) {
     return "我没有明显看到尿是红色的。";
   }
 
-  if (
-    text.includes("高血压") ||
-    text.includes("血压")
-  ) {
+  if (text.includes("高血压") || text.includes("血压")) {
     if (caseText.includes("高血压") || caseText.includes("bloodPressure")) {
       return "我有血压偏高的情况，之前医生也提醒过。";
     }
@@ -659,10 +817,7 @@ function ruleBasedPatientReply(currentCase, question) {
     return "我以前没有明确说过高血压。";
   }
 
-  if (
-    text.includes("糖尿病") ||
-    text.includes("血糖")
-  ) {
+  if (text.includes("糖尿病") || text.includes("血糖")) {
     if (caseText.includes("无糖尿病")) {
       return "我没有糖尿病。";
     }
@@ -674,11 +829,7 @@ function ruleBasedPatientReply(currentCase, question) {
     return "我不太清楚自己有没有血糖问题。";
   }
 
-  if (
-    text.includes("腹泻") ||
-    text.includes("呕吐") ||
-    text.includes("拉肚子")
-  ) {
+  if (text.includes("腹泻") || text.includes("呕吐") || text.includes("拉肚子")) {
     if (caseText.includes("腹泻")) {
       return "前几天有过腹泻，吃东西也不太好。";
     }
@@ -719,15 +870,11 @@ function ruleBasedPatientReply(currentCase, question) {
     return "最近没有特别固定吃什么药。";
   }
 
-  if (
-    text.includes("家族") ||
-    text.includes("遗传") ||
-    text.includes("家里人")
-  ) {
+  if (text.includes("家族") || text.includes("遗传") || text.includes("家里人")) {
     const familyHistory = currentCase.hiddenInfo?.familyHistory || [];
 
     if (familyHistory.length > 0) {
-      return familyHistory.join("，") + "。";
+      return `${familyHistory.join("，")}。`;
     }
 
     return "家里好像没有人得过明确的肾病。";
@@ -744,20 +891,13 @@ function ruleBasedPatientReply(currentCase, question) {
     return "具体检查结果我还不太清楚，医生说可能还需要进一步检查。";
   }
 
-  if (
-    text.includes("谢谢") ||
-    text.includes("好的") ||
-    text.includes("明白")
-  ) {
+  if (text.includes("谢谢") || text.includes("好的") || text.includes("明白")) {
     return "好的，医生。";
   }
 
   return "这个我不太确定，您能再问得具体一点吗？";
 }
 
-/**
- * 评分相关：关键词映射
- */
 function getKeywordsForItem(item) {
   const text = item || "";
   let keywords = [];
@@ -775,7 +915,7 @@ function getKeywordsForItem(item) {
   }
 
   if (text.includes("血尿") || text.includes("尿色")) {
-    keywords.push("血尿", "尿血", "红色", "茶色", "茶水");
+    keywords.push("血尿", "尿血", "红色", "茶色", "茶水", "颜色", "尿色");
   }
 
   if (text.includes("高血压") || text.includes("血压")) {
@@ -872,22 +1012,17 @@ function calculateDiagnosisScore(studentDiagnosis, finalDiagnosis) {
   return 8;
 }
 
-/**
- * 健康检查
- */
 app.get("/api/health", (req, res) => {
   res.json({
     status: "ok",
-    message: "Renal SP Agent MVP is running"
+    message: "Renal SP Agent MVP is running",
+    seedCount: caseSeeds.length
   });
 });
 
-/**
- * 知识库检索
- */
 app.get("/api/knowledge/search", (req, res) => {
   const q = req.query.q || "";
-  const results = searchKnowledge(q, { topK: 5 });
+  const results = safeSearchKnowledge(q, { topK: 5 });
 
   res.json({
     success: true,
@@ -899,65 +1034,57 @@ app.get("/api/knowledge/search", (req, res) => {
       chunkIndex: item.chunkIndex,
       score: item.score,
       keywords: item.keywords,
-      preview: item.text.slice(0, 300)
+      preview: String(item.text || "").slice(0, 300)
     }))
   });
 });
 
-/**
- * 生成病例
- * 改动重点：
- * 1. 生成 openingStatement 后立即提取线索。
- * 2. 返回 extractedClues 给前端。
- */
-/**
- * 生成病例
- * 逻辑：
- * 1. 生成完整病例
- * 2. 保存完整病例
- * 3. 对患者开场白做一次 Extractor 抽取
- * 4. 把开场白也记录为第 0 轮线索来源
- */
 app.post("/api/cases/generate", async (req, res) => {
   try {
-    const { complaint, difficulty } = req.body;
+    const { complaint = "", difficulty = "中等" } = req.body || {};
 
-    if (!complaint || !complaint.trim()) {
+    if (!String(complaint).trim()) {
       return res.status(400).json({
         success: false,
         message: "请先输入主诉或训练目标"
       });
     }
 
-    const relatedChunks = searchKnowledge(complaint, { topK: 6 });
-
+    const relatedChunks = safeSearchKnowledge(complaint, { topK: 6 });
     let selectedCase = null;
 
-    if (process.env.DEEPSEEK_API_KEY && relatedChunks.length > 0) {
-      selectedCase = await generateCaseFromPdfKnowledge({
-        complaint,
-        difficulty,
-        chunks: relatedChunks
-      });
-    } else if (process.env.DEEPSEEK_API_KEY) {
-      selectedCase = await generateCaseWithDeepSeek(complaint, difficulty);
-    } else {
+    if (process.env.DEEPSEEK_API_KEY && generateCaseFromPdfKnowledge && relatedChunks.length > 0) {
+      try {
+        selectedCase = await generateCaseFromPdfKnowledge({
+          complaint,
+          difficulty,
+          chunks: relatedChunks
+        });
+      } catch (error) {
+        console.error("基于知识库生成病例失败，准备使用备用生成逻辑：", error.message);
+      }
+    }
+
+    if (!selectedCase && process.env.DEEPSEEK_API_KEY) {
+      try {
+        selectedCase = await generateCaseWithDeepSeek(complaint, difficulty);
+      } catch (error) {
+        console.error("DeepSeek 备用病例生成失败，准备使用病例种子：", error.message);
+      }
+    }
+
+    if (!selectedCase) {
       selectedCase = selectSeedCase(complaint);
     }
 
     if (!selectedCase) {
       return res.status(500).json({
         success: false,
-        message: "病例生成失败，没有可用病例"
+        message: "病例生成失败，没有可用病例。请检查 server/data/caseSeeds.json"
       });
     }
 
-    selectedCase = normalizeCaseShape(selectedCase, complaint, difficulty);
-
-    if (!selectedCase.caseId) {
-      selectedCase.caseId = `case_${Date.now()}`;
-    }
-
+    selectedCase = normalizeCaseShape(selectedCase, complaint, difficulty, `case_${Date.now()}`);
     ensureCaseRuntimeState(selectedCase);
     saveCase(selectedCase);
 
@@ -1003,17 +1130,18 @@ app.post("/api/cases/generate", async (req, res) => {
   }
 });
 
-
-/**
- * 患者回答
- * 核心逻辑：
- * 一轮对话 = 医生问题 + 患者回答 + Extractor 结构化线索
- */
 app.post("/api/patient/reply", async (req, res) => {
   try {
-    const { caseId, question, conversationHistory } = req.body;
+    const { caseId, question = "", conversationHistory = [] } = req.body || {};
 
-    if (!question || !question.trim()) {
+    if (!caseId) {
+      return res.status(400).json({
+        success: false,
+        message: "缺少 caseId。请先生成病例，再开始问诊。"
+      });
+    }
+
+    if (!String(question).trim()) {
       return res.status(400).json({
         success: false,
         message: "请先输入医生问题"
@@ -1025,40 +1153,47 @@ app.post("/api/patient/reply", async (req, res) => {
     if (!currentCase) {
       return res.status(404).json({
         success: false,
-        message: "没有找到对应病例"
+        message: `没有找到对应病例：${caseId}。请重新生成病例。`
       });
     }
 
+    normalizeCaseShape(currentCase, currentCase.chiefComplaint, currentCase.difficulty, String(caseId));
     ensureCaseRuntimeState(currentCase);
 
-    const relatedChunks = searchKnowledge(
+    const relatedChunks = safeSearchKnowledge(
       `${currentCase.chiefComplaint || ""} ${question || ""}`,
       { topK: 4 }
     );
 
     let reply = "";
 
-    /**
-     * Patient Agent：
-     * 允许自然表达，只负责像患者一样回答
-     */
-    if (process.env.DEEPSEEK_API_KEY) {
-      reply = await generatePatientReply({
-        caseData: currentCase,
-        question,
-        conversationHistory,
-        chunks: relatedChunks
-      });
-    } else {
+    if (process.env.DEEPSEEK_API_KEY && generatePatientReply) {
+      try {
+        reply = await generatePatientReply({
+          caseData: currentCase,
+          question,
+          conversationHistory,
+          chunks: relatedChunks
+        });
+      } catch (error) {
+        console.error("服务版 Patient Agent 失败，准备使用备用回答：", error.message);
+      }
+    }
+
+    if (!reply && process.env.DEEPSEEK_API_KEY) {
+      try {
+        reply = await generatePatientReplyWithDeepSeek(currentCase, question, conversationHistory);
+      } catch (error) {
+        console.error("DeepSeek 患者回答失败，准备使用规则版回答：", error.message);
+      }
+    }
+
+    if (!reply) {
       reply = ruleBasedPatientReply(currentCase, question);
     }
 
-    reply = String(reply || "").trim();
+    reply = String(reply || "").trim() || "这个我不太确定，您能再问得具体一点吗？";
 
-    /**
-     * Extractor Agent：
-     * 必须严格结构化 JSON
-     */
     const extractedClues = await safeExtractClues(reply, {
       source: "patient_reply",
       caseId,
@@ -1097,17 +1232,13 @@ app.post("/api/patient/reply", async (req, res) => {
   }
 });
 
-
-/**
- * 规则评分
- */
 app.post("/api/scoring/evaluate", (req, res) => {
   const {
     caseId,
-    conversationHistory,
-    studentDiagnosis,
-    riskInput,
-    checkedExams,
+    conversationHistory = [],
+    studentDiagnosis = "",
+    riskInput = "",
+    checkedExams = [],
     structuredClues = {}
   } = req.body || {};
 
@@ -1120,16 +1251,14 @@ app.post("/api/scoring/evaluate", (req, res) => {
     });
   }
 
-  const allQuestions = (conversationHistory || [])
+  normalizeCaseShape(currentCase, currentCase.chiefComplaint, currentCase.difficulty, String(caseId));
+
+  const safeHistory = Array.isArray(conversationHistory) ? conversationHistory : [];
+  const safeExams = Array.isArray(checkedExams) ? checkedExams : [];
+
+  const allQuestions = safeHistory
     .map(item => item.doctor || "")
     .join(" ");
-
-  const allText = [
-    allQuestions,
-    studentDiagnosis || "",
-    riskInput || "",
-    ...(checkedExams || [])
-  ].join(" ");
 
   const mustAskItems =
     Array.isArray(currentCase.mustAskItems) && currentCase.mustAskItems.length > 0
@@ -1155,15 +1284,17 @@ app.post("/api/scoring/evaluate", (req, res) => {
 
   function isItemMatched(itemText, questionText, dialogText) {
     const item = String(itemText || "");
+    const keywords = getKeywordsForItem(item);
 
     if (questionText.includes(item)) {
       return true;
     }
 
-    if (
-      hasAny(item, ["主诉", "现病史"]) &&
-      dialogText.length > 0
-    ) {
+    if (keywords.length > 0 && keywords.some(keyword => questionText.includes(keyword))) {
+      return true;
+    }
+
+    if (hasAny(item, ["主诉", "现病史"]) && dialogText.length > 0) {
       return true;
     }
 
@@ -1248,14 +1379,12 @@ app.post("/api/scoring/evaluate", (req, res) => {
   }
 
   const dialogText = [
-    currentCase.openingStatement || "",
     currentCase.visibleInfo?.openingStatement || "",
-    ...(conversationHistory || []).map(item => `${item.doctor || ""} ${item.patient || ""}`)
+    ...safeHistory.map(item => `${item.doctor || ""} ${item.patient || ""}`)
   ].join(" ");
 
   mustAskItems.forEach(item => {
-    const itemText = String(item);
-    const matched = isItemMatched(itemText, allQuestions, dialogText);
+    const matched = isItemMatched(String(item), allQuestions, dialogText);
 
     if (matched) {
       coveredItems.push(item);
@@ -1267,9 +1396,7 @@ app.post("/api/scoring/evaluate", (req, res) => {
   const historyScore = Math.round((coveredItems.length / mustAskItems.length) * 45);
 
   const finalDiagnosis = currentCase.finalDiagnosis || "";
-  const diagnosis = studentDiagnosis || "";
-
-  let diagnosisScore = calculateDiagnosisScore(diagnosis, finalDiagnosis);
+  let diagnosisScore = calculateDiagnosisScore(studentDiagnosis, finalDiagnosis);
 
   if (diagnosisScore > 25) {
     diagnosisScore = 25;
@@ -1277,7 +1404,6 @@ app.post("/api/scoring/evaluate", (req, res) => {
 
   let riskScore = 0;
   let riskFeedback = "未填写或风险识别不足。";
-
   const riskText = riskInput || "";
 
   if (
@@ -1298,13 +1424,11 @@ app.post("/api/scoring/evaluate", (req, res) => {
     riskFeedback = "填写了风险判断，但还需要更贴近本病例的危险因素。";
   }
 
-  const exams = checkedExams || [];
-
   let examScore = 0;
   const expectedExamKeywords = ["Scr / eGFR", "电解质", "尿常规", "尿 ACR / PCR", "泌尿系超声"];
 
   expectedExamKeywords.forEach(keyword => {
-    if (exams.includes(keyword)) {
+    if (safeExams.includes(keyword)) {
       examScore += 2;
     }
   });
@@ -1367,23 +1491,27 @@ app.post("/api/scoring/evaluate", (req, res) => {
       riskFeedback,
       examFeedback,
       structuredClues: structuredClues || {},
-      checkedExams: exams,
+      checkedExams: safeExams,
       suggestion: "建议下次按照“主诉—现病史—既往史—用药史—家族史—风险识别—检查计划”的顺序问诊，并把风险判断和检查选择纳入临床推理。"
     }
   });
 });
 
-/**
- * DeepSeek 评分
- */
 app.post("/api/score/deepseek", async (req, res) => {
   try {
+    if (!deepseekScoreInterview) {
+      return res.status(501).json({
+        success: false,
+        message: "DeepSeek 评分模块未加载，请检查 server/services/deepseekScorer.js"
+      });
+    }
+
     const {
       caseId,
       conversationHistory = [],
       studentDiagnosis = "",
       ruleResult = null
-    } = req.body;
+    } = req.body || {};
 
     const currentCase = findCaseById(caseId);
 
@@ -1416,10 +1544,7 @@ app.post("/api/score/deepseek", async (req, res) => {
   }
 });
 
-/**
- * 前端页面兜底
- */
-app.get("*", (req, res) => {
+app.get(/.*/, (req, res) => {
   res.sendFile(path.join(__dirname, "../client/index.html"));
 });
 
