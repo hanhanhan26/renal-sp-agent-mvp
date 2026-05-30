@@ -47,6 +47,158 @@ function saveCase(fullCase) {
 }
 
 /**
+ * 创建空的结构化线索对象
+ */
+function createEmptyStructuredClues() {
+  return {
+    symptoms: [],
+    history: [],
+    medication: [],
+    familyHistory: [],
+    riskFactors: [],
+    negativeFindings: [],
+    examClues: [],
+    timeCourse: "",
+    summary: ""
+  };
+}
+
+/**
+ * 转成字符串数组，防止 Extractor 返回格式不稳定
+ */
+function toTextArray(value) {
+  if (!value) {
+    return [];
+  }
+
+  if (Array.isArray(value)) {
+    return value
+      .map(item => {
+        if (typeof item === "string") {
+          return item.trim();
+        }
+
+        if (item && typeof item === "object") {
+          return JSON.stringify(item);
+        }
+
+        return String(item || "").trim();
+      })
+      .filter(Boolean);
+  }
+
+  if (typeof value === "string") {
+    return value.trim() ? [value.trim()] : [];
+  }
+
+  return [String(value)].filter(Boolean);
+}
+
+/**
+ * 支持中英文 key，避免 Extractor 偶尔返回中文字段导致丢数据
+ */
+function pickClueValue(clues, keys) {
+  for (const key of keys) {
+    if (clues && clues[key] !== undefined) {
+      return clues[key];
+    }
+  }
+
+  return undefined;
+}
+
+/**
+ * 统一 Extractor 返回结构
+ */
+function normalizeExtractedClues(clues) {
+  const raw = clues && typeof clues === "object" ? clues : {};
+
+  return {
+    symptoms: toTextArray(pickClueValue(raw, ["symptoms", "症状"])),
+    history: toTextArray(pickClueValue(raw, ["history", "病史", "既往史", "现病史"])),
+    medication: toTextArray(pickClueValue(raw, ["medication", "用药", "用药史", "药物史"])),
+    familyHistory: toTextArray(pickClueValue(raw, ["familyHistory", "家族史"])),
+    riskFactors: toTextArray(pickClueValue(raw, ["riskFactors", "危险因素", "风险因素"])),
+    negativeFindings: toTextArray(pickClueValue(raw, ["negativeFindings", "阴性线索", "否认"])),
+    examClues: toTextArray(pickClueValue(raw, ["examClues", "检查线索", "检查结果", "labs"])),
+    timeCourse: String(pickClueValue(raw, ["timeCourse", "病程", "时间线"]) || ""),
+    summary: String(pickClueValue(raw, ["summary", "摘要", "总结"]) || "")
+  };
+}
+
+/**
+ * 数组合并去重
+ */
+function mergeUnique(oldList, newList) {
+  return [...new Set([...(oldList || []), ...(newList || [])].filter(Boolean))];
+}
+
+/**
+ * 把本轮提取到的线索合并进病例总线索池
+ */
+function mergeClues(baseClues, newClues) {
+  const base = normalizeExtractedClues(baseClues);
+  const incoming = normalizeExtractedClues(newClues);
+
+  return {
+    symptoms: mergeUnique(base.symptoms, incoming.symptoms),
+    history: mergeUnique(base.history, incoming.history),
+    medication: mergeUnique(base.medication, incoming.medication),
+    familyHistory: mergeUnique(base.familyHistory, incoming.familyHistory),
+    riskFactors: mergeUnique(base.riskFactors, incoming.riskFactors),
+    negativeFindings: mergeUnique(base.negativeFindings, incoming.negativeFindings),
+    examClues: mergeUnique(base.examClues, incoming.examClues),
+    timeCourse: incoming.timeCourse || base.timeCourse,
+    summary: incoming.summary || base.summary
+  };
+}
+
+/**
+ * 给病例增加运行时状态
+ */
+function ensureCaseRuntimeState(fullCase) {
+  if (!fullCase.structuredClues) {
+    fullCase.structuredClues = createEmptyStructuredClues();
+  }
+
+  if (!Array.isArray(fullCase.interviewRounds)) {
+    fullCase.interviewRounds = [];
+  }
+
+  return fullCase;
+}
+
+/**
+ * 记录一轮问诊：
+ * 医生问题 + 患者回答 + Extractor 线索
+ */
+function recordInterviewRound(fullCase, roundData) {
+  ensureCaseRuntimeState(fullCase);
+
+  const normalizedClues = normalizeExtractedClues(roundData.extractedClues);
+
+  fullCase.structuredClues = mergeClues(
+    fullCase.structuredClues,
+    normalizedClues
+  );
+
+  const round = {
+    roundNo: fullCase.interviewRounds.length + 1,
+    source: roundData.source || "patient_reply",
+    doctor: String(roundData.doctor || ""),
+    patient: String(roundData.patient || ""),
+    extractedClues: normalizedClues,
+    createdAt: new Date().toISOString()
+  };
+
+  fullCase.interviewRounds.push(round);
+
+  saveCase(fullCase);
+
+  return round;
+}
+
+/**
  * 从病例种子中选择病例
  */
 function selectSeedCase(complaint) {
@@ -160,21 +312,24 @@ function toPublicCase(fullCase) {
 }
 
 /**
- * 安全提取线索：失败也不影响病例生成和患者回答
+ * 安全提取线索：
+ * Extractor Agent 失败时，也不影响患者回答主流程
  */
-async function safeExtractClues(patientText) {
+async function safeExtractClues(patientText, context = {}) {
   try {
     if (!patientText || !patientText.trim()) {
-      return null;
+      return createEmptyStructuredClues();
     }
 
-    const clues = await extractCluesFromPatientText(patientText);
-    return clues || null;
+    const clues = await extractCluesFromPatientText(patientText, context);
+
+    return normalizeExtractedClues(clues);
   } catch (error) {
     console.error("结构化线索提取失败：", error.message);
-    return null;
+    return createEmptyStructuredClues();
   }
 }
+
 
 /**
  * 解析 AI 返回的 JSON
@@ -755,6 +910,14 @@ app.get("/api/knowledge/search", (req, res) => {
  * 1. 生成 openingStatement 后立即提取线索。
  * 2. 返回 extractedClues 给前端。
  */
+/**
+ * 生成病例
+ * 逻辑：
+ * 1. 生成完整病例
+ * 2. 保存完整病例
+ * 3. 对患者开场白做一次 Extractor 抽取
+ * 4. 把开场白也记录为第 0 轮线索来源
+ */
 app.post("/api/cases/generate", async (req, res) => {
   try {
     const { complaint, difficulty } = req.body;
@@ -795,16 +958,33 @@ app.post("/api/cases/generate", async (req, res) => {
       selectedCase.caseId = `case_${Date.now()}`;
     }
 
+    ensureCaseRuntimeState(selectedCase);
     saveCase(selectedCase);
 
     const publicCase = toPublicCase(selectedCase);
 
-    const extractedClues = await safeExtractClues(publicCase.openingStatement);
+    const extractedClues = await safeExtractClues(
+      publicCase.openingStatement,
+      {
+        source: "opening_statement",
+        caseId: selectedCase.caseId,
+        chiefComplaint: selectedCase.chiefComplaint
+      }
+    );
+
+    const round = recordInterviewRound(selectedCase, {
+      source: "opening_statement",
+      doctor: "",
+      patient: publicCase.openingStatement,
+      extractedClues
+    });
 
     res.json({
       success: true,
       case: publicCase,
       extractedClues,
+      structuredClues: selectedCase.structuredClues,
+      round,
       evidence: relatedChunks.map(item => ({
         id: item.id,
         source: item.source,
@@ -823,15 +1003,22 @@ app.post("/api/cases/generate", async (req, res) => {
   }
 });
 
+
 /**
  * 患者回答
- * 改动重点：
- * 1. 患者回答生成后，立即提取这句话里的结构化线索。
- * 2. 返回 extractedClues 给前端。
+ * 核心逻辑：
+ * 一轮对话 = 医生问题 + 患者回答 + Extractor 结构化线索
  */
 app.post("/api/patient/reply", async (req, res) => {
   try {
     const { caseId, question, conversationHistory } = req.body;
+
+    if (!question || !question.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: "请先输入医生问题"
+      });
+    }
 
     const currentCase = findCaseById(caseId);
 
@@ -842,6 +1029,8 @@ app.post("/api/patient/reply", async (req, res) => {
       });
     }
 
+    ensureCaseRuntimeState(currentCase);
+
     const relatedChunks = searchKnowledge(
       `${currentCase.chiefComplaint || ""} ${question || ""}`,
       { topK: 4 }
@@ -849,6 +1038,10 @@ app.post("/api/patient/reply", async (req, res) => {
 
     let reply = "";
 
+    /**
+     * Patient Agent：
+     * 允许自然表达，只负责像患者一样回答
+     */
     if (process.env.DEEPSEEK_API_KEY) {
       reply = await generatePatientReply({
         caseData: currentCase,
@@ -862,12 +1055,30 @@ app.post("/api/patient/reply", async (req, res) => {
 
     reply = String(reply || "").trim();
 
-    const extractedClues = await safeExtractClues(reply);
+    /**
+     * Extractor Agent：
+     * 必须严格结构化 JSON
+     */
+    const extractedClues = await safeExtractClues(reply, {
+      source: "patient_reply",
+      caseId,
+      doctorQuestion: question,
+      chiefComplaint: currentCase.chiefComplaint
+    });
+
+    const round = recordInterviewRound(currentCase, {
+      source: "patient_reply",
+      doctor: question,
+      patient: reply,
+      extractedClues
+    });
 
     res.json({
       success: true,
       reply,
       extractedClues,
+      structuredClues: currentCase.structuredClues,
+      round,
       evidence: relatedChunks.map(item => ({
         id: item.id,
         source: item.source,
@@ -886,6 +1097,7 @@ app.post("/api/patient/reply", async (req, res) => {
   }
 });
 
+
 /**
  * 规则评分
  */
@@ -896,8 +1108,8 @@ app.post("/api/scoring/evaluate", (req, res) => {
     studentDiagnosis,
     riskInput,
     checkedExams,
-    structuredClues
-  } = req.body;
+    structuredClues = {}
+  } = req.body || {};
 
   const currentCase = findCaseById(caseId);
 

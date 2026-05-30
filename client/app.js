@@ -194,54 +194,57 @@ function containsHighFever(text) {
   return hasAny(text, ["高热", "高烧"]);
 }
 
+function isProbablyFullSentence(value) {
+  const text = String(value || "").trim();
+
+  if (text.length > 36) return true;
+
+  if (
+    text.includes("医生") ||
+    text.includes("您好") ||
+    text.includes("我最近") ||
+    text.includes("我没有") ||
+    text.includes("我不太") ||
+    text.includes("感觉")
+  ) {
+    return text.length > 16;
+  }
+
+  return false;
+}
+
 function mergeStructuredClue(key, newValue) {
   if (!shouldUseClueValue(newValue)) {
+    return;
+  }
+
+  let value = String(newValue).trim();
+
+  // 核心修复：不要把患者整句话塞进结构化线索
+  if (isProbablyFullSentence(value)) {
     return;
   }
 
   const oldValue = structuredClues[key];
 
   if (!oldValue || oldValue === "未提取") {
-    structuredClues[key] = newValue;
+    structuredClues[key] = value;
     return;
   }
 
-  if (key === "fever" && valueHasTemperature(oldValue) && !valueHasTemperature(newValue)) {
-    return;
-  }
+  const oldParts = String(oldValue)
+    .split("、")
+    .map(item => item.trim())
+    .filter(Boolean);
 
-  if (key === "fever" && valueHasTemperature(newValue) && !valueHasTemperature(oldValue)) {
-    structuredClues[key] = newValue;
-    return;
-  }
+  const newParts = value
+    .split("、")
+    .map(item => item.trim())
+    .filter(Boolean);
 
-  if (String(newValue).length > String(oldValue).length) {
-    structuredClues[key] = newValue;
-  }
-}
+  const merged = [...new Set([...oldParts, ...newParts])];
 
-function applyDeepSeekExtractedClues(extractedClues) {
-  if (!extractedClues || typeof extractedClues !== "object") {
-    return;
-  }
-
-  Object.entries(extractedClues).forEach(([deepSeekKey, rawValue]) => {
-    const localKey = deepSeekClueKeyMap[deepSeekKey];
-
-    if (!localKey) {
-      return;
-    }
-
-    const value = getClueValue(rawValue);
-
-    if (!shouldUseClueValue(value)) {
-      return;
-    }
-
-    mergeStructuredClue(localKey, value);
-  });
-
-  renderStructuredClues();
+  structuredClues[key] = merged.join("、");
 }
 
 function renderCaseLibrary(list = caseLibrary) {
@@ -517,93 +520,330 @@ function extractUrinaryIrritationInfo(text) {
   return "";
 }
 
-function extractInfectionCauseInfo(text) {
-  if (hasAny(text, ["发热", "发烧", "高烧", "高热", "低热"])) {
-    return "发热提示感染可能";
+function isGeneralNegative(text) {
+  const source = String(text || "");
+
+  return (
+    source.includes("没有") ||
+    source.includes("没") ||
+    source.includes("无") ||
+    source.includes("否认") ||
+    source.includes("未出现") ||
+    source.includes("不伴")
+  );
+}
+
+function keywordIsNegated(text, keyword) {
+  const source = String(text || "");
+  const escapedKeyword = keyword.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+  const beforePattern = new RegExp(
+    `(没有|没|无|否认|未出现|不伴|没有明显|没觉得|没发现).{0,12}${escapedKeyword}`
+  );
+
+  const afterPattern = new RegExp(
+    `${escapedKeyword}.{0,12}(没有|没|无|不明显|未出现)`
+  );
+
+  return beforePattern.test(source) || afterPattern.test(source);
+}
+
+function hasPositiveClue(text, keywords) {
+  const source = String(text || "");
+
+  return keywords.some(keyword => {
+    return source.includes(keyword) && !keywordIsNegated(source, keyword);
+  });
+}
+
+function uniqueJoin(items) {
+  return [...new Set(items.filter(Boolean))].join("、");
+}
+
+function extractInfectionCauseInfo(question, reply) {
+  const q = String(question || "");
+  const r = String(reply || "");
+
+  // 医生问了腹泻/呕吐，但患者是否认，不能写胃肠道感染
+  if (
+    isGeneralNegative(r) &&
+    hasAny(q, ["腹泻", "呕吐", "拉肚子", "恶心"])
+  ) {
+    return "否认腹泻、呕吐";
   }
 
-  if (hasAny(text, ["感冒", "咽痛", "咳嗽"])) {
-    return "上呼吸道感染";
+  const parts = [];
+
+  // 只有患者回答里明确肯定，才提取
+  if (hasPositiveClue(r, ["腹泻", "拉肚子"])) {
+    parts.push("腹泻");
   }
 
-  if (hasAny(text, ["腹泻", "呕吐"])) {
-    return "胃肠道感染";
+  if (hasPositiveClue(r, ["呕吐", "吐"])) {
+    parts.push("呕吐");
+  }
+
+  if (hasPositiveClue(r, ["感冒", "咽痛", "嗓子疼", "咳嗽"])) {
+    parts.push("上呼吸道感染线索");
+  }
+
+  if (hasPositiveClue(r, ["发热", "发烧", "高烧", "高热", "畏寒", "怕冷", "寒战"])) {
+    parts.push("发热/畏寒");
+  }
+
+  return uniqueJoin(parts);
+}
+
+function extractChiefComplaintKeywords(text) {
+  const source = String(text || "");
+  const parts = [];
+
+  const durationMatch = source.match(/([一二两三四五六七八九十\d]+)\s*(天|周|月|年)/);
+  if (durationMatch) {
+    parts.push(`持续${durationMatch[1]}${durationMatch[2]}`);
+  }
+
+  if (hasAny(source, ["眼睑", "眼皮"])) {
+    parts.push("眼睑水肿");
+  }
+
+  if (hasAny(source, ["下肢", "腿肿", "脚踝"])) {
+    parts.push("下肢水肿");
+  }
+
+  if (hasAny(source, ["水肿", "浮肿"]) && parts.length === 0) {
+    parts.push("水肿");
+  }
+
+  if (hasAny(source, ["蛋白尿", "尿蛋白"])) {
+    parts.push("蛋白尿");
+  }
+
+  if (hasAny(source, ["发热", "发烧", "高烧", "高热"])) {
+    parts.push("发热");
+  }
+
+  if (hasAny(source, ["怕冷", "畏寒", "寒战"])) {
+    parts.push("畏寒/怕冷");
+  }
+
+  if (hasAny(source, ["尿频", "尿急", "尿痛", "小便次数多"])) {
+    parts.push("尿路刺激症状");
+  }
+
+  if (hasAny(source, ["腰痛", "腰疼", "腰酸", "肾区"])) {
+    parts.push("腰痛/肾区疼痛");
+  }
+
+  return uniqueJoin(parts) || "已获取主诉";
+}
+
+function extractUrineChangeInfo(question, reply) {
+  const q = String(question || "");
+  const r = String(reply || "");
+  const parts = [];
+
+  if (hasPositiveClue(r, ["尿少", "尿量少", "尿量减少", "小便少", "少尿"])) {
+    parts.push("尿量减少");
+  }
+
+  if (
+    isGeneralNegative(r) &&
+    hasAny(q, ["尿量", "尿少", "少尿", "小便少"])
+  ) {
+    parts.push("否认明显尿量减少");
+  }
+
+  if (hasPositiveClue(r, ["颜色深", "发红", "红色", "茶色", "尿色深"])) {
+    parts.push("尿色加深/发红");
+  }
+
+  if (hasPositiveClue(r, ["泡沫", "泡沫尿"])) {
+    parts.push("泡沫尿");
+  }
+
+  if (
+    isGeneralNegative(r) &&
+    hasAny(q, ["泡沫", "泡沫尿"])
+  ) {
+    parts.push("否认明显泡沫尿");
+  }
+
+  return uniqueJoin(parts);
+}
+
+function extractEdemaInfo(reply) {
+  const r = String(reply || "");
+  const parts = [];
+
+  if (hasPositiveClue(r, ["眼睑", "眼皮"])) {
+    parts.push("眼睑水肿");
+  }
+
+  if (hasPositiveClue(r, ["下肢", "腿肿", "脚踝"])) {
+    parts.push("下肢水肿");
+  }
+
+  if (hasPositiveClue(r, ["水肿", "浮肿", "肿"])) {
+    parts.push("水肿");
+  }
+
+  return uniqueJoin(parts);
+}
+
+function extractMedicationInfo(question, reply) {
+  const q = String(question || "");
+  const r = String(reply || "");
+  const parts = [];
+
+  if (
+    isGeneralNegative(r) &&
+    hasAny(q, ["药", "用药", "止痛药", "布洛芬", "抗生素"])
+  ) {
+    return "否认近期特殊用药";
+  }
+
+  if (hasPositiveClue(r, ["布洛芬"])) parts.push("布洛芬");
+  if (hasPositiveClue(r, ["止痛药"])) parts.push("止痛药");
+  if (hasPositiveClue(r, ["抗生素"])) parts.push("抗生素");
+  if (hasPositiveClue(r, ["感冒药"])) parts.push("感冒药");
+  if (hasPositiveClue(r, ["中草药"])) parts.push("中草药");
+
+  return uniqueJoin(parts);
+}
+
+function extractHistoryInfo(question, reply) {
+  const q = String(question || "");
+  const r = String(reply || "");
+  const parts = [];
+
+  if (
+    isGeneralNegative(r) &&
+    hasAny(q, ["高血压", "糖尿病", "肾病史", "既往"])
+  ) {
+    return "否认相关既往病史";
+  }
+
+  if (hasPositiveClue(r, ["高血压"])) parts.push("高血压史");
+  if (hasPositiveClue(r, ["糖尿病"])) parts.push("糖尿病史");
+  if (hasPositiveClue(r, ["肾病", "肾炎", "肾功能"])) parts.push("既往肾病史");
+
+  return uniqueJoin(parts);
+}
+
+function extractFamilyHistoryInfo(question, reply) {
+  const q = String(question || "");
+  const r = String(reply || "");
+
+  if (
+    isGeneralNegative(r) &&
+    hasAny(q, ["家族", "遗传", "家里人"])
+  ) {
+    return "否认肾病家族史";
+  }
+
+  if (hasPositiveClue(r, ["家族", "遗传", "家里人"])) {
+    return "有家族史线索";
   }
 
   return "";
 }
 
 function analyzeStructuredClues(question, reply, mode = "normal") {
-  const text = `${question || ""} ${reply || ""}`;
+  const q = String(question || "");
+  const r = String(reply || "");
 
+  // 主诉：只提关键词，不放整段
   if (
     mode === "opening" ||
-    hasAny(text, ["哪里不舒服", "主诉", "怎么了", "现病史", "不舒服"])
+    hasAny(q, ["哪里不舒服", "主诉", "怎么了", "现病史", "不舒服"])
   ) {
-    mergeStructuredClue("chiefComplaint", reply || "已获取患者主诉信息");
+    mergeStructuredClue("chiefComplaint", extractChiefComplaintKeywords(r));
   }
 
-  if (containsFeverClue(text)) {
-    const feverInfo = extractFeverInfo(text);
-    mergeStructuredClue("fever", feverInfo || reply);
+  // 发热
+  if (containsFeverClue(r)) {
+    mergeStructuredClue("fever", extractFeverInfo(r) || "发热");
+  } else if (containsFeverClue(q) && isGeneralNegative(r)) {
+    mergeStructuredClue("fever", "否认发热");
   }
 
-  if (containsHighFever(text)) {
+  if (containsHighFever(r)) {
     mergeStructuredClue("risk", "高热");
   }
 
-  if (containsLumbarPainClue(text)) {
-    const lumbarPainInfo = extractLumbarPainInfo(text);
-    mergeStructuredClue("lumbarPain", lumbarPainInfo || reply);
+  // 腰痛
+  if (containsLumbarPainClue(r)) {
+    mergeStructuredClue("lumbarPain", extractLumbarPainInfo(r) || "腰痛/肾区疼痛");
+  } else if (containsLumbarPainClue(q) && isGeneralNegative(r)) {
+    mergeStructuredClue("lumbarPain", "否认腰痛");
   }
 
-  if (hasAny(text, ["尿频", "尿急", "尿痛", "小便次数", "尿路刺激", "排尿痛", "尿的时候痛", "又急又痛"])) {
-    const urinaryInfo = extractUrinaryIrritationInfo(text);
-    mergeStructuredClue("urinaryIrritation", urinaryInfo || "有尿路刺激症状");
-  }
-
-  if (hasAny(text, ["尿量", "少尿", "尿少", "小便少", "小便多", "小便变化", "次数多"])) {
-    mergeStructuredClue("urineChange", reply);
-  }
-
-  if (hasAny(text, ["水肿", "肿", "眼皮", "脚踝", "下肢", "浮肿"])) {
-    mergeStructuredClue("edema", reply);
-  }
-
-  if (hasAny(text, ["血尿", "尿血", "红色", "茶色", "尿液颜色", "颜色"])) {
-    mergeStructuredClue("hematuria", reply);
-  }
-
-  if (hasAny(text, ["药", "用药", "止痛药", "布洛芬", "中草药", "抗生素", "过敏"])) {
-    mergeStructuredClue("medication", reply);
-  }
-
-  if (hasAny(text, ["感染", "感冒", "咽痛", "腹泻", "呕吐", "发热", "发烧", "高烧", "高热"])) {
-    const infectionInfo = extractInfectionCauseInfo(text);
-    mergeStructuredClue("infection", infectionInfo || reply);
-  }
-
-  if (hasAny(text, ["高血压", "糖尿病", "以前", "既往", "肾病史", "基础病", "慢性病"])) {
-    mergeStructuredClue("history", reply);
-  }
-
-  if (hasAny(text, ["家族", "遗传", "家里人", "父母", "兄弟姐妹"])) {
-    mergeStructuredClue("familyHistory", reply);
-  }
-
-  if (
-    hasAny(text, ["胸闷", "心慌", "气促", "高钾", "危险", "休克", "意识", "少尿", "严重", "高热", "高烧"]) ||
-    containsHighFever(text)
+  // 尿路刺激症状
+  if (hasPositiveClue(r, ["尿频", "尿急", "尿痛", "小便次数多", "排尿痛"])) {
+    mergeStructuredClue("urinaryIrritation", "尿频/尿急/尿痛");
+  } else if (
+    isGeneralNegative(r) &&
+    hasAny(q, ["尿频", "尿急", "尿痛", "排尿痛"])
   ) {
-    if (containsHighFever(text)) {
-      mergeStructuredClue("risk", "高热");
-    } else {
-      mergeStructuredClue("risk", reply);
-    }
+    mergeStructuredClue("urinaryIrritation", "否认尿路刺激症状");
+  }
+
+  // 尿量 / 小便变化
+  const urineInfo = extractUrineChangeInfo(q, r);
+  if (urineInfo) {
+    mergeStructuredClue("urineChange", urineInfo);
+  }
+
+  // 水肿
+  const edemaInfo = extractEdemaInfo(r);
+  if (edemaInfo) {
+    mergeStructuredClue("edema", edemaInfo);
+  } else if (isGeneralNegative(r) && hasAny(q, ["水肿", "肿", "眼皮", "下肢"])) {
+    mergeStructuredClue("edema", "否认明显水肿");
+  }
+
+  // 血尿
+  if (hasPositiveClue(r, ["血尿", "尿血", "红色", "茶色", "发红"])) {
+    mergeStructuredClue("hematuria", "尿色发红/血尿可能");
+  } else if (isGeneralNegative(r) && hasAny(q, ["血尿", "尿血", "红色", "茶色", "颜色"])) {
+    mergeStructuredClue("hematuria", "否认肉眼血尿");
+  }
+
+  // 用药史
+  const medicationInfo = extractMedicationInfo(q, r);
+  if (medicationInfo) {
+    mergeStructuredClue("medication", medicationInfo);
+  }
+
+  // 感染 / 诱因：只根据患者回答，不根据医生问题乱推断
+  const infectionInfo = extractInfectionCauseInfo(q, r);
+  if (infectionInfo) {
+    mergeStructuredClue("infection", infectionInfo);
+  }
+
+  // 既往史
+  const historyInfo = extractHistoryInfo(q, r);
+  if (historyInfo) {
+    mergeStructuredClue("history", historyInfo);
+  }
+
+  // 家族史
+  const familyInfo = extractFamilyHistoryInfo(q, r);
+  if (familyInfo) {
+    mergeStructuredClue("familyHistory", familyInfo);
+  }
+
+  // 危险信号
+  if (hasPositiveClue(r, ["胸闷", "心慌", "气促", "呼吸困难"])) {
+    mergeStructuredClue("risk", "胸闷/心慌/气促");
+  } else if (isGeneralNegative(r) && hasAny(q, ["胸闷", "心慌", "气促", "呼吸困难"])) {
+    mergeStructuredClue("risk", "否认胸闷/心慌/气促");
   }
 
   renderStructuredClues();
 }
+
 
 function renderStructuredClues() {
   const labels = {
@@ -772,9 +1012,11 @@ async function sendQuestion() {
 
     analyzeStructuredClues(question, reply);
 
-    if (data.extractedClues) {
-      applyDeepSeekExtractedClues(data.extractedClues);
-    }
+    // 先暂停 DeepSeek 抽取结果覆盖前端关键词，避免整句再次写进去
+    // if (data.extractedClues) {
+    //   applyDeepSeekExtractedClues(data.extractedClues);
+    // }
+
   } catch (error) {
     console.error(error);
     alert("请求失败，请检查服务是否启动");
@@ -782,6 +1024,12 @@ async function sendQuestion() {
     sendBtn.disabled = false;
     sendBtn.textContent = "发送";
   }
+}
+
+function applyDeepSeekExtractedClues(extractedClues) {
+  if (!extractedClues) return;
+
+  console.log("DeepSeek 提取到的结构化线索：", extractedClues);
 }
 
 function normalizeConversationForDeepSeek(history = []) {
@@ -948,7 +1196,7 @@ async function submitScore() {
         studentDiagnosis,
         riskInput,
         checkedExams,
-        structuredClues
+        structuredClues: window.structuredClues || {}
       })
     });
 
