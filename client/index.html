@@ -6,88 +6,303 @@
   <title>AI模拟患者进行问诊</title>
   <link rel="stylesheet" href="./style.css" />
 </head>
+
 <body>
-  <div class="container">
-    <header>
-      <h1>AI模拟患者进行问诊</h1>
-      <p>教学模拟工具，仅用于问诊训练与课程设计，不构成医疗建议或真实患者处置依据。未审校病例不可用于正式教学考核。</p>
-    </header>
+  <header class="topbar">
+    <div class="brand">
+      <div class="logo">医</div>
+      <div>
+        <div class="small-title">NEPHRO AI TRAINING</div>
+        <h1>AI模拟患者进行问诊</h1>
+      </div>
+    </div>
 
-    <section class="card">
-      <h2>创建病例</h2>
+    <div class="status-group">
+      <div class="dropdown">
+        <button class="status-pill" id="knowledgeBtn" type="button">知识库 ▾</button>
 
-      <label for="complaint">主诉 / 训练目标</label>
-      <textarea id="complaint" placeholder="例如：水肿、蛋白尿；血尿；少尿、肌酐升高"></textarea>
-
-      <label for="difficulty">难度</label>
-      <select id="difficulty">
-        <option value="简单">简单</option>
-        <option value="中等" selected>中等</option>
-        <option value="偏难">偏难</option>
-      </select>
-
-      <button id="generateBtn">生成病例</button>
-    </section>
-
-    <section class="card" id="caseResult" style="display: none;">
-      <h2>病例已生成</h2>
-      <div class="case-info">
-        <p><strong>科室：</strong><span id="department"></span></p>
-        <p><strong>难度：</strong><span id="caseDifficulty"></span></p>
-        <p><strong>患者：</strong><span id="patientInfo"></span></p>
-        <p><strong>主诉：</strong><span id="chiefComplaint"></span></p>
+        <div class="dropdown-menu" id="knowledgeMenu">
+          <div class="dropdown-title">已接入知识库</div>
+          <div class="dropdown-item">《内科鉴别诊断》</div>
+        </div>
       </div>
 
-      <div class="patient-box">
-        <p><strong>患者开场：</strong></p>
-        <p id="openingStatement"></p>
+      <span class="status-pill warning">教学模拟</span>
+    </div>
+  </header>
+
+  <nav class="nav-tabs">
+    <button class="tab active" id="trainingTab" type="button">训练台</button>
+    <button class="tab" id="feedbackTab" type="button">学习反馈</button>
+  </nav>
+
+  <div class="notice">
+    教学模拟工具，仅用于问诊训练与课程设计，不构成医疗建议或真实患者处置依据。未审校病例不可用于正式教学考核。
+  </div>
+
+  <main class="workspace">
+    <!-- 左侧：案例库 -->
+    <aside class="left-panel card">
+      <div class="panel-title-row">
+        <div>
+          <h2>案例库</h2>
+        </div>
+
+        <button class="icon-btn" id="newCaseBtn" type="button">＋</button>
+      </div>
+
+      <input
+        class="search-input"
+        id="caseSearchInput"
+        placeholder="搜索病种或症状，例如：水肿、血尿、少尿"
+      />
+
+      <div class="case-list" id="caseList">
+        <!-- JS 自动渲染案例库 -->
+      </div>
+
+      <div class="engine-box">
+        <div class="engine-row">
+          <span>知识检索</span>
+          <strong>启用</strong>
+        </div>
+
+        <div class="engine-row">
+          <span>隐藏信息</span>
+          <strong>逐层揭示</strong>
+        </div>
+
+        <div class="engine-row">
+          <span>评分闭环</span>
+          <strong>自动记录</strong>
+        </div>
+      </div>
+    </aside>
+
+    <!-- 中间：问诊区 -->
+    <section class="center-panel card">
+      <div class="patient-header">
+        <div class="avatar">患</div>
+
+        <div>
+          <p class="eyebrow">AI 患者模拟</p>
+          <h2 id="patientTitle">请先选择或生成病例</h2>
+          <p id="patientMeta">点击左侧案例库，或手动输入主诉生成标准化病人。</p>
+        </div>
+
+        <span class="difficulty-badge" id="difficultyBadge">未开始</span>
+      </div>
+
+      <section class="generate-box" id="generateBox">
+        <label for="complaint">主诉 / 训练目标</label>
+        <textarea
+          id="complaint"
+          placeholder="例如：水肿、蛋白尿；血尿；少尿、肌酐升高"
+        ></textarea>
+
+        <label for="difficulty">难度</label>
+        <select id="difficulty">
+          <option value="基础">基础</option>
+          <option value="中等" selected>中等</option>
+          <option value="进阶">进阶</option>
+          <option value="挑战">挑战</option>
+        </select>
+
+        <button class="primary-btn" id="generateBtn" type="button">
+          生成病例并开始问诊
+        </button>
+      </section>
+
+      <section class="chat-box" id="chatBox">
+        <div class="chat-empty">
+          选择左侧案例或生成病例后，患者开场白会显示在这里。
+        </div>
+      </section>
+
+      <div class="quick-questions" id="quickQuestions">
+        <!-- JS 根据病例动态生成快捷问题 -->
+      </div>
+
+      <div class="chat-input-row">
+        <input
+          id="doctorQuestion"
+          placeholder="例如：您最近尿量有什么变化？"
+        />
+
+        <button class="send-btn" id="sendBtn" type="button">
+          发送
+        </button>
       </div>
     </section>
 
-    <section class="card" id="chatSection" style="display: none;">
-  <h2>问诊对话</h2>
+    <!-- 右侧：结构化提取 + 评分反馈 -->
+    <aside class="right-panel card" id="feedbackPanel">
+      <div class="panel-title-row">
+        <div>
+          <p class="eyebrow">结构化信息提取</p>
+          <h2>临床判断</h2>
+        </div>
 
-  <div id="chatBox" class="chat-box"></div>
+        <button class="ghost-btn" id="resetBtn" type="button">
+          重置
+        </button>
+      </div>
 
-  <div class="chat-input-row">
-    <input id="doctorQuestion" type="text" placeholder="请输入医生的问题，例如：你小便有没有泡沫？" />
-    <button id="sendQuestionBtn">发送</button>
-  </div>
+      <details class="clue-box" id="clueDetails" open>
+        <summary>
+          <span>已获取线索</span>
+          <strong id="clueCount">0 条</strong>
+        </summary>
 
-  <button id="finishInterviewBtn" class="secondary-btn">结束问诊并评分</button>
-</section>
+        <div class="structured-clues" id="structuredClues">
+          <div class="clue-row">
+            <strong>主诉与现病史</strong>
+            <span class="not-extracted">未提取</span>
+          </div>
 
-<section class="card" id="scoringSection" style="display: none;">
-  <h2>评分反馈</h2>
+          <div class="clue-row">
+            <strong>发热 / 体温</strong>
+            <span class="not-extracted">未提取</span>
+          </div>
 
-  <label for="studentDiagnosis">请输入你的初步诊断</label>
-  <input id="studentDiagnosis" type="text" placeholder="例如：肾病综合征" />
+          <div class="clue-row">
+            <strong>腰痛 / 肾区疼痛</strong>
+            <span class="not-extracted">未提取</span>
+          </div>
 
-  <button id="submitScoreBtn">提交诊断并生成评分</button>
+          <div class="clue-row">
+            <strong>尿频 / 尿急 / 尿痛</strong>
+            <span class="not-extracted">未提取</span>
+          </div>
 
-  <div id="scoreResult" class="score-result" style="display: none;">
-    <h3>评分报告</h3>
+          <div class="clue-row">
+            <strong>尿量 / 小便变化</strong>
+            <span class="not-extracted">未提取</span>
+          </div>
 
-    <p><strong>总分：</strong><span id="totalScore"></span>/100</p>
-    <p><strong>问诊得分：</strong><span id="historyScore"></span>/50</p>
-    <p><strong>诊断得分：</strong><span id="diagnosisScore"></span>/30</p>
-    <p><strong>沟通得分：</strong><span id="communicationScore"></span>/20</p>
+          <div class="clue-row">
+            <strong>水肿信息</strong>
+            <span class="not-extracted">未提取</span>
+          </div>
 
-    <p><strong>已覆盖问诊要点：</strong></p>
-    <ul id="coveredItems"></ul>
+          <div class="clue-row">
+            <strong>血尿信息</strong>
+            <span class="not-extracted">未提取</span>
+          </div>
 
-    <p><strong>遗漏问诊要点：</strong></p>
-    <ul id="missedItems"></ul>
+          <div class="clue-row">
+            <strong>用药史</strong>
+            <span class="not-extracted">未提取</span>
+          </div>
 
-    <p><strong>诊断反馈：</strong></p>
-    <p id="diagnosisFeedback"></p>
+          <div class="clue-row">
+            <strong>感染 / 诱因</strong>
+            <span class="not-extracted">未提取</span>
+          </div>
 
-    <p><strong>改进建议：</strong></p>
-    <p id="suggestion"></p>
-  </div>
-</section>
+          <div class="clue-row">
+            <strong>既往史</strong>
+            <span class="not-extracted">未提取</span>
+          </div>
 
-  </div>
+          <div class="clue-row">
+            <strong>家族史</strong>
+            <span class="not-extracted">未提取</span>
+          </div>
+
+          <div class="clue-row">
+            <strong>危险信号</strong>
+            <span class="not-extracted">未提取</span>
+          </div>
+        </div>
+      </details>
+
+      <label for="studentDiagnosis">初步诊断</label>
+      <textarea
+        id="studentDiagnosis"
+        placeholder="写下最可能诊断与病因判断"
+      ></textarea>
+
+      <label for="riskInput">需立即识别的风险</label>
+      <input
+        id="riskInput"
+        placeholder="例如：高钾血症、容量不足、感染风险、血栓风险"
+      />
+
+      <label>拟安排检查</label>
+      <div class="exam-list" id="examList">
+        <details class="exam-item">
+          <summary>
+            <label>
+              <input type="checkbox" value="Scr / eGFR" />
+              Scr / eGFR
+            </label>
+          </summary>
+          <p>用于评估肾功能水平，判断是否存在急性或慢性肾功能损害。</p>
+        </details>
+
+        <details class="exam-item">
+          <summary>
+            <label>
+              <input type="checkbox" value="电解质" />
+              电解质
+            </label>
+          </summary>
+          <p>用于识别高钾血症、低钠、酸碱紊乱等危险情况，AKI 或 CKD 中尤其重要。</p>
+        </details>
+
+        <details class="exam-item">
+          <summary>
+            <label>
+              <input type="checkbox" value="尿常规" />
+              尿常规
+            </label>
+          </summary>
+          <p>用于判断蛋白尿、血尿、管型等，是肾内科问诊后最基础的检查之一。</p>
+        </details>
+
+        <details class="exam-item">
+          <summary>
+            <label>
+              <input type="checkbox" value="尿 ACR / PCR" />
+              尿 ACR / PCR
+            </label>
+          </summary>
+          <p>用于定量评估蛋白尿或白蛋白尿，有助于判断肾病严重程度和随访疗效。</p>
+        </details>
+
+        <details class="exam-item">
+          <summary>
+            <label>
+              <input type="checkbox" value="泌尿系超声" />
+              泌尿系超声
+            </label>
+          </summary>
+          <p>用于观察肾脏大小、结构、积水情况，帮助排除梗阻性肾损伤。</p>
+        </details>
+
+        <details class="exam-item">
+          <summary>
+            <label>
+              <input type="checkbox" value="免疫学检查" />
+              免疫学检查
+            </label>
+          </summary>
+          <p>用于鉴别自身免疫性肾病、肾小球肾炎、系统性疾病相关肾损害等。</p>
+        </details>
+      </div>
+
+      <button class="primary-btn" id="scoreBtn" type="button">
+        提交判断并评分
+      </button>
+
+      <section class="report-box" id="reportBox">
+        <p class="report-placeholder">
+          评分反馈会显示在这里。点击顶部“学习反馈”也会跳到这里。
+        </p>
+      </section>
+    </aside>
+  </main>
 
   <script src="./app.js"></script>
 </body>
